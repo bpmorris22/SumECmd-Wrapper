@@ -22,7 +22,7 @@ SUM databases pulled from a **live server are routinely dirty** (ESE dirty shutd
 ## Command line
 
 ```
-mshta "SumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
+mshta "SumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
 ```
 
 - `<input>` — a `.csv` (auto-loads into the viewer), a `Sum\` folder, or a `.mdb` inside one (prefilled; processed with `/auto`).
@@ -30,6 +30,7 @@ mshta "SumECmd-Wrapper.hta" "<inputOrCsv>" ["<outDir>"] [/auto]
 - **Target hostname** is required before processing — it names the `_Processed\<host>\SumECmd` output folder next to the app (family convention shared with the DFIR-Artifact-Finder, so processed evidence is visible per host per tool). Guessed from `Collection-<host>-…` paths or a passed `_Processed\<host>\` outDir — overwrite the guess if it's wrong.
 - **Shared IOC list** — an `IOC.txt` next to the app (one term per line, `#` comments) is auto-merged into the IOC box at launch; one list covers the whole toolkit and terms you paste locally are kept.
 - **Run provenance + triage summary** — every successful run appends a `runinfo.json` entry (app, host, input path, files) in the output folder, including a triage summary (entries, flagged count, max score, top hits); the DFIR-Artifact-Finder shows these per host in its inventory, even for standalone runs.
+- `/from:yyyy-MM-dd` `/to:yyyy-MM-dd` — case window (UTC, inclusive): prefills the date filter and is recorded in `runinfo.json`; never affects scoring. The [DFIR-Artifact-Finder](https://github.com/bpmorris22/DFIR-Artifact-Finder) passes these on every launch.
 
 ## Notes
 
