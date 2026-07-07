@@ -1,0 +1,1721 @@
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="IE=edge">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>SumECmd Wrapper</title>
+<HTA:APPLICATION
+  ID="sumcmdHta"
+  APPLICATIONNAME="SumECmd Wrapper"
+  BORDER="thick"
+  CAPTION="yes"
+  SCROLL="auto"
+  SINGLEINSTANCE="yes"
+  SHOWINTASKBAR="yes"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  INNERBORDER="no"
+  CONTEXTMENU="yes"
+  SELECTION="yes" />
+<!--
+  SumECmd CSV contract, VERIFIED 2026-07-07 against SumECmd 0.5.2.0 output (real as-dbms Sum\ folder):
+
+  SumECmd parses the server-SKU SUM / User Access Logging ESE databases under
+  %SystemRoot%\System32\LogFiles\Sum\ (SystemIdentity.mdb + Current.mdb + archived year {GUID}.mdb).
+  Output CSVs are named  <yyyyMMddHHmmss>_SumECmd_<CATEGORY>_<Table>_Output.csv  in the --csv root:
+
+    DETAIL_ClientsDetailed  (analytic core; one row per user x IP x role x DAY):
+      Date,Count,DayNumber,RoleGuid,RoleDescription,AuthenticatedUserName,TotalAccesses,
+      InsertDate,LastAccess,IpAddress,ClientName,TenantId,SourceFile
+      - Date = day (yyyy-MM-dd); Count = accesses that day; InsertDate/LastAccess = client-level
+        first/last seen (constant across a client's day rows); all times UTC. IpAddress may be
+        IPv4 or IPv6; RoleDescription is the friendly role name (else fall back to RoleGuid).
+    DETAIL_Clients          (one row per client, the ClientsDetailed rows rolled up)
+    DETAIL_RoleAccesses     (per role first/last seen)
+    SUMMARY_ChainedDbInfo   (Year -> archived {GUID}.mdb)
+    SUMMARY_RoleInfos       (RoleGuid -> RoleName -> ProductName)
+    SUMMARY_SystemIdentInfo (CreationTime / OS build)
+
+  SumECmd needs the WHOLE folder (SystemIdentity.mdb maps role GUIDs -> friendly names).
+  SUM databases pulled from live servers are routinely DIRTY (ESE dirty shutdown). SumECmd aborts
+  with EsentDatabaseDirtyShutdownException; the wrapper auto-repairs a COPY of the .mdb set
+  (esentutl /p <db>.mdb /o, transaction logs excluded) and re-runs. See the repair flow below.
+  SumECmd crashes on a bare no-arg run (Console.WindowWidth) -> version is read via --version.
+-->
+<style>
+  html{margin:0;height:100%;background:#0d1117}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
+  #content{zoom:0.9}
+  a{color:#58a6ff}
+  .mono{font-family:Consolas,"Courier New",monospace}
+  .muted{color:#8b949e}
+  .err{color:#f85149}
+  .ok{color:#3fb950}
+  header{padding:8px 14px;background:#161b22;border-bottom:1px solid #30363d}
+  header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
+  header h1 small{color:#8b949e;font-weight:400}
+  .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .wrap{padding:12px 14px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
+  input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
+  input.wide{width:62%}
+  .btn{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;margin:2px}
+  .btn:hover{border-color:#58a6ff}
+  .btn.primary{background:#1f6feb;border-color:#1f6feb}
+  .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .row{white-space:nowrap}
+  .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top}
+  .stat .n{font-size:17px;font-weight:700;display:block}
+  .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  .cards3{width:100%}
+  .col3{display:inline-block;width:32%;vertical-align:top;margin-right:1%}
+  .brow{white-space:nowrap;margin:3px 0}
+  .blab{display:inline-block;width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;font-family:Consolas,monospace;font-size:11px}
+  .blab.lnk{cursor:pointer;color:#58a6ff}
+  .blab.lnk:hover{text-decoration:underline}
+  .btrack{display:inline-block;width:32%;height:12px;background:#1c2330;border-radius:3px;overflow:hidden;vertical-align:middle}
+  .bfill{display:block;height:100%;background:#1f6feb}
+  .bval{display:inline-block;width:18%;text-align:right;font-size:11px;color:#8b949e;vertical-align:middle}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
+  th:hover{color:#58a6ff}
+  .cgrip{position:absolute;top:0;right:-4px;width:8px;height:100%;cursor:col-resize;z-index:6}
+  .cgrip:hover{background:#58a6ff;filter:alpha(opacity=45);opacity:.45}
+  td{max-width:360px}
+  tr.sus td{background:#2a1416}
+  tr.sus td.first{border-left:3px solid #ff6b6b}
+  tr.sel td{background:#1c2f4a}
+  .scroll{max-height:52vh;overflow:auto;border:1px solid #30363d;border-radius:8px}
+  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;margin-right:3px}
+  .tag.sus{background:#3a1416;color:#ff6b6b}
+  .tag.usr{background:#3a2d10;color:#d29922}
+  .tag.lol{background:#10263f;color:#58a6ff}
+  .tag.rare{background:#241a3a;color:#b083f0}
+  .tag.ioc{background:#3a1416;color:#ff6b6b;border:1px solid #ff6b6b}
+  .tag.gen{background:#21262d;color:#8b949e}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:210px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:nowrap}
+  .dl div{overflow:hidden;text-overflow:ellipsis}
+  .hl-user{color:#d29922}
+  .hl-ioc{color:#ff6b6b;font-weight:700}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
+  .hide{display:none}
+  .lnk{cursor:pointer;color:#58a6ff}
+  .lnk:hover{text-decoration:underline}
+  .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
+  .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.66);z-index:1000;overflow:auto}
+  .modal .mcard{max-width:780px;margin:36px auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 22px}
+  .modal h2{margin:0 0 6px;font-size:18px;font-weight:600}
+  .modal h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .modal ul{margin:4px 0;padding-left:20px}.modal li{margin:3px 0;font-size:13px}
+  .modal p{font-size:13px;margin:6px 0}
+  .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
+  .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
+  .modal .gh{font-family:Consolas,monospace;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>SumECmd Wrapper <small>&mdash; SUM / User Access Logging triage <span id="appver"></span></small></h1>
+  <span class="pill" id="verpill">version: checking&hellip;</span>
+  <span class="pill" id="srcpill">no data loaded</span>
+  <span style="float:right">
+    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
+    <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
+    <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
+    <button class="btn" id="fup" title="Larger text">A+</button>
+  </span>
+</header>
+
+<div class="wrap" id="content">
+
+  <!-- CONTROL PANEL -->
+  <div class="card">
+    <h3>SumECmd control panel</h3>
+    <div class="muted" id="exeline" style="font-size:11px;margin-bottom:6px"></div>
+    <label class="fld">SUM database to process
+      &mdash; <select id="inMode" title="Folder = point at a collected Sum\ folder (SumECmd -d). Single .mdb = pick Current.mdb (or an archived {GUID}.mdb) and the wrapper processes its PARENT folder — the whole SystemIdentity.mdb + Current.mdb + year-DB set has to be processed together.">
+        <option value="d">folder (Sum\ directory)</option><option value="f">single .mdb (uses its folder)</option></select>
+    </label>
+    <input class="txt wide" id="pfPath" value="" placeholder="e.g. ...\Collection-<host>-<date>\...\System32\LogFiles\Sum">
+    <input type="file" id="pfPick" style="display:none">
+    <button class="btn" id="browseBtn">Browse&hellip;</button>
+    <label class="fld" title="Required before processing. Guessed from the input path (Collection-<host>-… segments) — overwrite it if the guess is wrong. SUM is a SERVER artifact — there is no live 'scan this machine' button.">Target hostname (required) &mdash; names the output folder _Processed\&lt;host&gt;\SumECmd next to this app</label>
+    <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. as-dbms">
+    <label class="fld">CSV output directory</label>
+    <input class="txt wide" id="outDir" value="">
+    <button class="btn" id="openDirBtn">Open folder</button>
+    <div style="margin-top:10px">
+      <button class="btn" id="verBtn">Check version</button>
+      <button class="btn" id="updBtn">Update / download SumECmd</button>
+      <span class="sep"></span>
+      <button class="btn primary" id="procBtn">Process &rarr; analyze</button>
+      <button class="btn" id="loadBtn">Load existing CSV&hellip;</button>
+      <input type="file" id="csvPick" style="display:none">
+      <span class="sep"></span>
+      <button class="btn" id="logToggle">Show log</button>
+      <span class="muted" id="status" style="margin-left:8px"></span>
+    </div>
+    <div style="margin-top:8px" id="producedRow" class="hide">
+      <label class="fld">Produced CSVs &mdash; pick one to view</label>
+      <select id="producedSel" style="min-width:70%"></select>
+      <button class="btn" id="loadSelBtn">Load selected</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+    <div class="card">
+      <h3 id="ovTitle">Overview</h3>
+      <div id="statbar"></div>
+    </div>
+
+    <div class="card cards3 hide" id="pfCards">
+      <div class="col3"><h3>Top users (by total accesses)</h3><div id="topExes"></div></div>
+      <div class="col3"><h3>Top source IPs (by clients)</h3><div id="topNew"></div></div>
+      <div class="col3"><h3>Suspicious clients</h3><div id="topSus"></div></div>
+    </div>
+
+    <div class="card">
+      <h3 id="tableTitle">Records</h3>
+      <div class="row hide" style="margin-bottom:8px" id="viewToggle">
+        <button class="btn on" id="vExec" title="One row per client (user x source IP x role) — the ClientsDetailed day rows rolled up, score-ranked">Clients</button>
+        <button class="btn" id="vTime" title="Same client rows, sorted by Last seen (most recent access first)">Timeline</button>
+        <button class="btn" id="vUsers" title="Grouped per authenticated user: distinct IPs, distinct roles, first/last seen, max score">Users</button>
+      </div>
+      <div class="row hide" style="margin-bottom:8px" id="pfCats">
+        <button class="btn on" data-cat="all">All</button>
+        <button class="btn" data-cat="sus">Suspicious</button>
+        <button class="btn" data-cat="external">External IP</button>
+        <button class="btn" data-cat="admin">Admin-pattern</button>
+        <button class="btn" data-cat="oneday">One-day</button>
+        <button class="btn" data-cat="ipv6">IPv6</button>
+        <button class="btn" data-cat="ioc">IOC hits</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <input class="txt" id="q" placeholder="search user / IP / role&hellip;" style="width:280px">
+        <span id="srcWrap" class="hide"><span class="sep"></span><label class="muted" style="font-size:12px">source:</label>
+          <select id="srcSel" title="Filter by source file."><option value="">all source files</option></select></span>
+        <span id="pfDateCtl" class="hide">
+          <span class="sep"></span>
+          <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter by Last seen (UTC)">
+          <span class="muted">&rarr;</span>
+          <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:140px" title="Filter by Last seen (UTC)">
+        </span>
+        <span class="sep"></span>
+        <button class="btn" id="iocBtn">IOC / keywords&hellip;</button>
+        <button class="btn" id="clearBtn">clear</button>
+        <button class="btn" id="exportBtn">Export view &rarr; CSV</button>
+        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div id="iocWrap" class="hide" style="margin-bottom:8px">
+        <label class="fld">IOC / keyword list — comma or newline separated; matched (case-insensitive substring) against user, source IP, role and source file. Matches score +3 and light up the row.</label>
+        <textarea id="iocBox" rows="3" style="width:70%;vertical-align:top"></textarea>
+        <button class="btn" id="iocApply">Apply</button>
+        <button class="btn" id="iocLoad">Load file&hellip;</button>
+        <input type="file" id="iocPick" style="display:none">
+        <span class="muted" id="iocInfo" style="font-size:11px"></span>
+      </div>
+      <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
+      <div class="muted" id="pfFoot" style="font-size:11px;margin-top:6px">All timestamps UTC. Suspicious rows are shaded (score &ge; 3: IOC hit, external source IP, admin-pattern account, single-day burst, routable IPv6&hellip;). Click a row for full detail (per-day access counts, role GUID, tenant). SUM retention typically spans YEARS — mind the date columns when scoping. Max 6000 rows shown; export writes the full filtered set.</div>
+    </div>
+
+    <div class="card hide" id="detailCard">
+      <h3>Record detail <span class="lnk" id="detCopy" style="float:right;margin-left:12px">copy record</span><span class="lnk" id="detClose" style="float:right">close &times;</span></h3>
+      <div id="detBody"></div>
+    </div>
+  </div>
+
+</div>
+
+<script language="JScript">
+"use strict";
+
+var APP_VERSION = "0.1.0";
+var KNOWN_LATEST_SUMECMD = "0.5.2.0";                                            // baseline as of 2026-07-07 (KAPE Modules\bin build)
+var SUMCMD_ZIP_URL = "https://download.ericzimmermanstools.com/SumECmd.zip";     // official EZ mirror
+var SUMCMD_PAGE = "https://ericzimmerman.github.io/";                            // for live latest-version lookup
+var EXE = "";
+var EXE_DIR = "";
+var LOCAL_VER = "";
+var LATEST_VER = "";
+var WEB_OK = false;                  // could we reach the Zimmerman Tools site to check latest?
+var QUERY = "";
+var MAXROWS = 6000;
+var LASTOUTDIR = "";
+var qTimer = null;
+var MODE = "sum";                    // "sum" = rich client analysis, "generic" = raw table
+var VIEW = "clients";                // sum mode: "clients", "time" (same rows by last-seen), "users" (grouped)
+var ROWS = [];                       // client records
+var CURCAT = "all";
+var DFROM = 0, DTO = 0;
+var SORT = {clients:{k:0,d:1}, time:{k:5,d:-1}};   // clients default: score desc; timeline default: Last seen desc
+var USORTKEY = 6, USORTDIR = -1;     // users view: default max-score desc
+var IOCS = [];                       // lowercased IOC / keyword terms
+var DETREC = null;                   // record currently shown in the detail pane
+var GHEAD = null, GROWS = [], GSRC = "";
+var GSORTKEY = -1, GSORTDIR = 1;
+var GSRCIDX = -1;                    // generic mode: index of the SourceFile(name) column
+var SRCFILTER = "";                  // selected source-file filter (generic mode)
+var BUSY = false;                    // a SumECmd run is in progress
+var PRODUCED = [];                   // CSVs produced by the last run
+
+/* admin-pattern account markers (spec §6 U3) */
+var ADMIN_PATTERNS = ["admin","adm-","da-","dadmin","svc","-adm"];
+
+/* ---------- tiny helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ if(s==null) return ""; s=String(s);
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function endsWith(s,suf){ if(!s) return false; s=String(s); return s.length>=suf.length && s.substring(s.length-suf.length)===suf; }
+function contains(s,sub){ return String(s).indexOf(sub)>=0; }
+function nf(n){ n=String(n); var dot=n.indexOf("."); var dec=""; if(dot>=0){ dec=n.substring(dot); n=n.substring(0,dot); }
+  var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0) r=","+r; } return r+dec; }
+function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; }
+function appendLog(t){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
+  el.style.display="block"; $("logToggle").innerHTML="Hide log"; el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+function trimStr(s){ return String(s).replace(/^\s+|\s+$/g,""); }
+function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
+function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,"");
+  e.className = vis ? c : (c+" hide"); }
+function msOf(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if(!m) return 0; return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]); }
+function dayOf(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})/); if(!m) return 0; return Number(m[1]+m[2]+m[3]); }
+
+/* ---------- IP classification (spec §6 U2 / U5) ----------
+   External = routable: not RFC1918 / loopback / link-local / unique-local / unspecified.
+   Routable IPv6 additionally earns the IPV6 tag (uncommon in these environments). */
+function isExternalIp(ip){
+  ip=trimStr(String(ip)); if(!ip) return false;
+  if(ip.indexOf(":")>=0){
+    var l=ip.toLowerCase();
+    if(l==="::1" || /^0+(:0+)*:0*1$/.test(l)) return false;          // loopback ::1
+    if(l==="::" || /^0+(:0+)*$/.test(l)) return false;               // unspecified ::
+    if(/^fe[89ab]/.test(l)) return false;                            // link-local fe80::/10
+    if(/^f[cd]/.test(l)) return false;                               // unique-local fc00::/7
+    return true;                                                     // routable IPv6
+  }
+  var m=ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)/); if(!m) return false;
+  var a=+m[1], b=+m[2];
+  if(a===0 || a===127) return false;                                 // unspecified / loopback
+  if(a===10) return false;                                           // RFC1918 10/8
+  if(a===192 && b===168) return false;                               // RFC1918 192.168/16
+  if(a===172 && b>=16 && b<=31) return false;                        // RFC1918 172.16/12
+  if(a===169 && b===254) return false;                               // link-local 169.254/16
+  return true;
+}
+function isRoutableV6(ip){ return String(ip).indexOf(":")>=0 && isExternalIp(ip); }
+function isAdminAcct(userL){ if(!userL) return false;
+  for(var i=0;i<ADMIN_PATTERNS.length;i++){ if(userL.indexOf(ADMIN_PATTERNS[i])>=0) return true; } return false; }
+function ipSortKey(ip){ ip=String(ip); var m=ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if(m){ function p3(x){ x=String(x); while(x.length<3) x="0"+x; return x; } return p3(m[1])+"."+p3(m[2])+"."+p3(m[3])+"."+p3(m[4]); }
+  return "zzz"+ip.toLowerCase(); }   // IPv6 / other sort after IPv4
+
+/* ---------- file IO via ActiveX (UTF-8 safe, with network-zone fallback) ----------
+   ADODB.Stream is the proper UTF-8 reader, but when the .hta runs from a NETWORK location
+   (mapped drive / UNC share) mshta assigns it the intranet/internet zone and ADODB refuses
+   every LoadFromFile/SaveToFile with "Safety settings on this computer prohibit accessing a
+   data source on another domain" — regardless of where the target file lives. FSO is not
+   zone-checked, so we fall back to ANSI file IO: CSV structure is unaffected (all-ASCII), only
+   rare non-ASCII chars (accented usernames) display mojibake'd. Best fidelity = run locally. */
+var FILE_IO="adodb";                 // flips to "fso" permanently on the first zone-policy block
+function zoneNote(){
+  appendLog("NOTE: this app is running from a network location, so Windows zone policy blocks the UTF-8 file reader (ADODB.Stream). Falling back to ANSI file IO — everything works, but non-ASCII characters (accented usernames) may display incorrectly. For full fidelity copy this folder to a LOCAL path (e.g. C:\\Tools\\SumECmd) and run it from there.");
+}
+function readUtf8(path){
+  if(FILE_IO==="adodb"){
+    try{
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.LoadFromFile(path);
+      var parts=[]; while(!st.EOS){ parts.push(st.ReadText(65536)); } st.Close();
+      return parts.join("");
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;   // real IO errors propagate
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.OpenTextFile(path,1,false,0), out=f.ReadAll(); f.Close();
+  if(out.length>=3 && out.charCodeAt(0)===239 && out.charCodeAt(1)===187 && out.charCodeAt(2)===191) out=out.substring(3);
+  return out;
+}
+function writeUtf8(path,text){
+  if(FILE_IO==="adodb"){
+    try{
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.WriteText(text); st.SaveToFile(path,2); st.Close();
+      return;
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+/* cmd expands %N / %VAR% inside .bat lines even within quotes — Velociraptor trees contain literal % (C%3A) */
+function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+
+/* Run a batch script, wait, return {rc, log}. show=true -> visible console window. */
+function runBat(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\sumcmd_"+stamp+".bat";
+  var logp=tmp+"\\sumcmd_"+stamp+".log";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.Close();
+  var rc=sh.Run('cmd /c ""'+bat+'""', show?1:0, true);
+  var txt="";
+  try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
+  try{ fso.DeleteFile(bat); }catch(e2){}
+  try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
+  return { rc:rc, log:txt };
+}
+
+/* Run a batch NON-blocking; writes a .done marker when finished. Caller polls with pollDone().
+   This keeps the HTA script responsive (no MSHTML long-running-script watchdog). */
+function runBatAsync(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\sumcmd_"+stamp+".bat";
+  var logp=tmp+"\\sumcmd_"+stamp+".log";
+  var donep=tmp+"\\sumcmd_"+stamp+".done";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.WriteLine('echo done> "'+donep+'"');   // marker written after everything above completes
+  f.Close();
+  sh.Run('cmd /c ""'+bat+'""', show?1:0, false);   // false = do NOT block the script
+  return { bat:bat, log:logp, done:donep, elapsed:0 };
+}
+function pollDone(ctx){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(fso.FileExists(ctx.done)){
+    var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
+    try{ fso.DeleteFile(ctx.bat); }catch(e1){}
+    try{ fso.DeleteFile(ctx.done); }catch(e2){}
+    try{ if(fso.FileExists(ctx.log)) fso.DeleteFile(ctx.log); }catch(e3){}
+    ctx.onDone(log);
+    return;
+  }
+  ctx.elapsed+=1;
+  if(ctx.elapsed>1800){ ctx.onTimeout&&ctx.onTimeout(); return; }   // 30-min safety cap
+  if(ctx.onTick) ctx.onTick(ctx.elapsed);
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- source-file filter (generic mode) ---------- */
+function distinctVals(arr){ var seen={}, out=[]; for(var i=0;i<arr.length;i++){ var v=arr[i]; if(v!=null && v!=="" && !seen[v]){ seen[v]=1; out.push(v); } } return out; }
+function shortPathN(p,n){ p=String(p); var parts=p.split("\\"); if(parts.length<=n) return p; return "…\\"+parts.slice(parts.length-n).join("\\"); }
+function shortPath(p){ return shortPathN(p,4); }
+function populateSourceFilter(vals){
+  var sel=$("srcSel"); sel.innerHTML="";
+  var o0=document.createElement("option"); o0.value=""; o0.text="all source files ("+vals.length+")"; sel.add(o0);
+  vals=vals.slice(0).sort();
+  for(var i=0;i<vals.length;i++){ var o=document.createElement("option"); o.value=vals[i]; o.text=shortPath(vals[i]); sel.add(o); }
+  SRCFILTER=""; sel.value="";
+  showEl("srcWrap", vals.length>1);
+}
+
+/* ---------- tooling: locate / version / download ---------- */
+function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
+function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+function parentDir(p){ var i=String(p).lastIndexOf("\\"); return i>=0?p.substring(0,i):p; }
+function htaFolder(){
+  try{ var cl=sumcmdHta.commandLine+""; var m=cl.match(/"([^"]+\.hta)"/i); if(!m) m=cl.match(/([A-Za-z]:\\[^"]+\.hta)/i);
+    if(m) return parentDir(m[1]); }catch(e){}
+  try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
+  return "";
+}
+function resolveExe(){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var dir=htaFolder(), cands=[];
+  if(dir) cands.push(dir+"\\SumECmd.exe");
+  cands.push("C:\\Users\\Forensics\\Downloads\\1-Package\\KAPE\\Modules\\bin\\SumECmd.exe");   // confirmed present on this box
+  cands.push("C:\\Tools\\net9\\SumECmd.exe");
+  for(var i=0;i<cands.length;i++){ if(fso.FileExists(cands[i])){ EXE=cands[i]; EXE_DIR=parentDir(cands[i]); return true; } }
+  EXE=""; EXE_DIR=dir||""; return false;
+}
+function checkDeps(){
+  // framework-dependent builds ship SumECmd.dll + runtimeconfig next to the exe
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var miss=[];
+  if(!EXE_DIR) return ["(install folder unknown)"];
+  if(fso.FileExists(EXE_DIR+"\\SumECmd.runtimeconfig.json") && !fso.FileExists(EXE_DIR+"\\SumECmd.dll")) miss.push("SumECmd.dll");
+  return miss;
+}
+function verTuple(v){ var p=String(v).split("."); var a=[]; for(var i=0;i<p.length;i++) a.push(parseInt(p[i],10)||0); return a; }
+function verCmp(a,b){ a=verTuple(a); b=verTuple(b); var n=Math.max(a.length,b.length);
+  for(var i=0;i<n;i++){ var x=a[i]||0,y=b[i]||0; if(x!==y) return x<y?-1:1; } return 0; }
+function fetchLatest(){
+  LATEST_VER=KNOWN_LATEST_SUMECMD; WEB_OK=false;
+  try{
+    var x=new ActiveXObject("MSXML2.ServerXMLHTTP.6.0");
+    x.setTimeouts(2000,3000,4000,4000);
+    x.open("GET", SUMCMD_PAGE, false); x.send();
+    if(x.status===200){ WEB_OK=true; var t=x.responseText+""; var m=t.match(/SumECmd[\s\S]{0,400}?(\d+\.\d+\.\d+(?:\.\d+)?)/i); if(m) LATEST_VER=m[1]; }
+  }catch(e){ WEB_OK=false; }
+  return LATEST_VER;
+}
+function updateVerPill(){
+  var s=LOCAL_VER?("SumECmd v"+esc(LOCAL_VER)):"SumECmd: not found";
+  if(!WEB_OK){ s+=" &middot; <span style='color:#8b949e'>no internet / no web source</span>"; }
+  else if(LATEST_VER){
+    if(LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0) s+=" &middot; <span style='color:#d29922'>update v"+esc(LATEST_VER)+" available</span>";
+    else if(LOCAL_VER) s+=" &middot; <span style='color:#3fb950'>latest</span>";
+    else s+=" &middot; latest v"+esc(LATEST_VER);
+  }
+  $("verpill").innerHTML=s;
+}
+function evaluateTooling(promptIfNeeded){
+  var dir=htaFolder();
+  var localComplete = dir ? fileExists(dir+"\\SumECmd.exe") : false;   // exe next to the .hta (self-contained)
+  var found=resolveExe();
+  if(EXE) $("exeline").innerHTML="Tool: "+esc(EXE)+"  &middot;  run with DOTNET_ROLL_FORWARD=Major (covers newer .NET-target builds)";
+  else $("exeline").innerHTML='<span class="err">SumECmd.exe not found next to this app ('+esc(dir||"app folder")+'), in the KAPE Modules\\bin, or C:\\Tools\\net9</span>';
+  if(found) checkVersion(); else { LOCAL_VER=""; }
+  fetchLatest(); updateVerPill();
+  if(found){ var miss=checkDeps(); if(miss.length) setStatus("SumECmd support files missing next to the exe: "+miss.join(", "),"err"); }
+  if(!promptIfNeeded) return;
+  if(localComplete){
+    if(WEB_OK && LOCAL_VER && verCmp(LOCAL_VER,LATEST_VER)<0){
+      if(confirm("A newer SumECmd is available.\n\nNext to this app: v"+LOCAL_VER+"\nLatest online:   v"+LATEST_VER+"\n\nDownload the update next to the app now?")) downloadLatest();
+    }
+  } else {
+    if(WEB_OK){
+      var msg = (found ? ("SumECmd is not set up next to this app (currently using "+EXE+").\n\n") : "SumECmd.exe was not found.\n\n")
+        + "Download the latest (v"+LATEST_VER+") to a self-contained copy next to the app at:\n"+(dir||"?")+"\n\nProceed?";
+      if(confirm(msg)) downloadLatest();
+    } else if(found){
+      setStatus("Using local SumECmd ("+EXE+") — no internet to reach Zimmerman Tools, so can't verify/download the latest.","muted");
+    } else {
+      setStatus("SumECmd.exe not found next to this .hta and no internet to download it. Place SumECmd.exe next to this .hta.","err");
+    }
+  }
+}
+function downloadLatest(){
+  var target=htaFolder()||EXE_DIR;   // always install next to the .hta (self-contained)
+  if(!target){ setStatus("Cannot determine the app folder to install into","err"); return; }
+  if(!WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SumECmd from\n"+SUMCMD_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
+  if(WEB_OK && !confirm("Download latest SumECmd (v"+(LATEST_VER||KNOWN_LATEST_SUMECMD)+") from:\n"+SUMCMD_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
+  setStatus("Downloading & installing SumECmd… (give it a moment)","muted");
+  var tq=String(target).replace(/'/g,"''");
+  var ps="$ErrorActionPreference='Stop';"
+    +"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;"
+    +"$u='"+SUMCMD_ZIP_URL+"';"
+    +"$z=Join-Path $env:TEMP 'SumECmd_dl.zip';"
+    +"$x=Join-Path $env:TEMP ('SumECmd_x_'+[guid]::NewGuid().ToString('N'));"
+    +"Invoke-WebRequest -Uri $u -OutFile $z;"
+    +"Expand-Archive -Force -Path $z -DestinationPath $x;"
+    +"$exe=Get-ChildItem -Path $x -Recurse -Filter SumECmd.exe | Select-Object -First 1;"
+    +"if(-not $exe){throw 'SumECmd.exe not found in downloaded archive'};"
+    +"$src=Split-Path $exe.FullName;"
+    +"New-Item -ItemType Directory -Force -Path '"+tq+"' | Out-Null;"
+    +"Copy-Item -Path (Join-Path $src '*') -Destination '"+tq+"' -Recurse -Force;"
+    +"Remove-Item $z,$x -Recurse -Force -ErrorAction SilentlyContinue;"
+    +"Write-Output 'INSTALL_OK'";
+  try{
+    var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -Command "'+ps+'" > "__LOG__" 2>&1']);
+    appendLog("--- SumECmd download / install ---\n"+r.log);
+    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SumECmd installed to "+target,"ok"); evaluateTooling(false); }
+    else setStatus("Download/install failed — see log","err");
+  }catch(e){ setStatus("Download failed: "+e.message,"err"); }
+}
+
+/* ---------- actions ---------- */
+function checkVersion(){
+  if(!EXE || !fileExists(EXE)){ LOCAL_VER=""; updateVerPill(); setStatus("SumECmd.exe not found — use 'Update / download SumECmd'","err"); return; }
+  try{
+    // SumECmd crashes on a bare no-arg run (Console.WindowWidth); --version exits cleanly.
+    var r=runBat([
+      "set DOTNET_ROLL_FORWARD=Major",
+      '"'+EXE+'" --version > "__LOG__" 2>&1'
+    ]);
+    var m=r.log.match(/SumECmd version ([0-9.]+)/i) || r.log.match(/(\d+\.\d+\.\d+(?:\.\d+)?)/);
+    if(m){ LOCAL_VER=m[1]; updateVerPill(); setStatus("SumECmd v"+LOCAL_VER+" detected","ok"); }
+    else { LOCAL_VER=""; updateVerPill(); setStatus("Ran SumECmd but could not parse version — see log","err"); appendLog(r.log); }
+  }catch(e){ LOCAL_VER=""; updateVerPill(); setStatus("Version check failed: "+e.message,"err"); }
+}
+
+/* ---------- target hostname + _Processed output convention (family, 2026-07-06) ----------
+   All processed output lands in <appFolder>\_Processed\<Hostname>\<AppName>\ so the
+   Artifact-Finder (and the operator) can see per-host state at a glance. The hostname field is
+   REQUIRED before processing (not for just viewing CSVs). Guess order: Collection-<host>-<date>
+   segment in the input path -> \_Processed\<host>\ in a CLI-passed outDir. User-typed values are
+   never overwritten. SUM is a server artifact — there is no live-machine guess. */
+var APP_NAME="SumECmd";
+var HOST_TOUCHED=false, OUT_TOUCHED=false;
+function sanitHost(s){ return String(s).replace(/[^A-Za-z0-9._\-]/g,"-").replace(/^[\-.]+|[\-.]+$/g,""); }
+function guessHost(p){
+  p=String(p||"");
+  var m=p.match(/Collection-([A-Za-z0-9][A-Za-z0-9\-_\.]*?)-\d{4}-\d{2}-\d{2}/i); if(m) return m[1];
+  m=p.match(/[\\\/]_Processed[\\\/]([^\\\/]+)[\\\/]/i); if(m) return m[1];
+  return "";
+}
+function defaultOutDir(){
+  var h=sanitHost($("hostName").value); if(!h) return "";
+  var base=htaFolder(); if(!base){ try{ base=new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+""; }catch(e){ return ""; } }
+  return base+"\\_Processed\\"+h+"\\"+APP_NAME;
+}
+function syncOutDir(){ if(OUT_TOUCHED) return; var d=defaultOutDir(); if(d) $("outDir").value=d; }
+function hostGuessFrom(p){
+  if(!HOST_TOUCHED || !trimStr($("hostName").value)){ var g=guessHost(p); if(g) $("hostName").value=sanitHost(g); }
+  syncOutDir();
+}
+function requireHost(){
+  var h=sanitHost($("hostName").value);
+  if(!h){ setStatus("Target hostname is required — it names the output folder _Processed\\<host>\\"+APP_NAME+". Type the host this artifact came from, then process again.","err");
+    try{ $("hostName").focus(); }catch(e){} return ""; }
+  if(!trimStr($("outDir").value)) syncOutDir();
+  return h;
+}
+
+/* ---------- shared toolkit IOC list (family, 2026-07-06) ----------
+   IOC.txt next to the .hta (the toolkit folder — same file for every wrapper + the
+   Artifact-Finder): one term per line, # comments. Auto-merged into the IOC box at launch
+   (before any /auto run) so one paste covers the whole engagement. */
+function loadToolkitIoc(){
+  try{
+    var base=htaFolder(); if(!base) return;
+    var p=base+"\\IOC.txt";
+    if(!fileExists(p)) return;
+    var parts=String(readUtf8(p)).split(/\r?\n/), add=[], i;
+    for(i=0;i<parts.length;i++){ var s=trimStr(parts[i]); if(s && s.charAt(0)!=="#") add.push(s); }
+    if(!add.length) return;
+    var cur=$("iocBox").value, curL={}, cp=String(cur).split(/[\r\n,;]+/);
+    for(i=0;i<cp.length;i++){ var c=trimStr(cp[i]).toLowerCase(); if(c) curL[c]=1; }
+    var fresh2=[]; for(i=0;i<add.length;i++){ if(!curL[add[i].toLowerCase()]) fresh2.push(add[i]); }
+    if(!fresh2.length) return;
+    $("iocBox").value=(trimStr(cur)?(cur.replace(/\s+$/,"")+"\r\n"):"")+fresh2.join("\r\n");
+    applyIocs();
+    appendLog("Toolkit IOC list: merged "+fresh2.length+" term(s) from "+p);
+    setStatus("Loaded "+fresh2.length+" IOC term(s) from the toolkit IOC.txt","ok");
+  }catch(e){}
+}
+
+/* ---------- run provenance (family, 2026-07-06) ----------
+   Appended into <outDir>\runinfo.json after every successful run. The Artifact-Finder reads
+   these to bind outputs to their exact source artifact (and host) even without its manifest. */
+function writeRunInfo(outdir, input, freshFiles){
+  try{
+    var p=String(outdir).replace(/[\\\/]+$/,"")+"\\runinfo.json";
+    var arr=[];
+    try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
+    var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
+    var iso=d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds());
+    var names=[]; for(var i=0;i<freshFiles.length && i<50;i++) names.push(freshFiles[i].name||String(freshFiles[i]));
+    arr.push({app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value),
+              input:String(input||""), finishedUtc:iso, files:names});
+    writeUtf8(p, JSON.stringify(arr,null,2));
+    RUNINFO_LAST={path:p, iso:iso};
+  }catch(e){}
+}
+var RUNINFO_LAST=null;   // the entry writeRunInfo just appended — patched with a triage summary after the auto-load
+function patchRunInfoSummary(summary){
+  /* second-phase runinfo write (family, 2026-07-07): the scored rows only exist after the
+     auto-load that follows a run, so the headline triage numbers are patched onto the entry
+     writeRunInfo appended moments earlier. Best-effort — a missing summary just shows counts-only. */
+  try{
+    if(!RUNINFO_LAST || !summary) return;
+    var arr=JSON.parse(readUtf8(RUNINFO_LAST.path));
+    if(!arr || arr.length==null) return;
+    for(var i=arr.length-1;i>=0;i--){ var e=arr[i];
+      if(e && e.app===APP_NAME && e.finishedUtc===RUNINFO_LAST.iso){ e.summary=summary; break; } }
+    writeUtf8(RUNINFO_LAST.path, JSON.stringify(arr,null,2));
+  }catch(e){}
+}
+function buildRunSummary(){
+  /* headline triage numbers from the scored rows: entries, wrapper-flagged count, max score,
+     top-3 "user@ip (score)". "Flagged" uses this app's own suspicion threshold (rec.sus). */
+  try{
+    if(!ROWS.length) return null;
+    var flagged=0, maxScore=0, top=[], i;
+    for(i=0;i<ROWS.length;i++){ var r=ROWS[i];
+      if(r.score>maxScore) maxScore=r.score;
+      if(r.sus) flagged++; }
+    var sorted=ROWS.slice(0);
+    sorted.sort(function(a,b){ return b.score-a.score; });
+    for(i=0;i<sorted.length && top.length<3;i++){ if(sorted[i].score>0) top.push(sorted[i].user+"@"+sorted[i].ip+" ("+sorted[i].score+")"); }
+    return {entries:ROWS.length, flagged:flagged, maxScore:maxScore, top:top};
+  }catch(e){ return null; }
+}
+
+/* ---------- input resolution: SumECmd always takes the FOLDER ---------- */
+function resolveSumDir(p){
+  p=trimStr(String(p||"")); if(!p) return "";
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(fso.FolderExists(p)) return p.replace(/[\\\/]+$/,"");
+  if(fso.FileExists(p)) return parentDir(p);         // a bare Current.mdb (etc.) -> use its parent Sum\ folder
+  return "";
+}
+
+function processSum(){
+  var inp=trimStr($("pfPath").value);
+  if(!requireHost()) return;
+  var outdir=$("outDir").value;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sumDir=resolveSumDir(inp);
+  if(!sumDir){ setStatus("Input not found: "+inp+" — point at a Sum\\ folder or a Current.mdb inside one.","err"); return; }
+  if(!fso.FileExists(sumDir+"\\SystemIdentity.mdb")){
+    appendLog("WARNING: SystemIdentity.mdb not found in "+sumDir+" — SumECmd needs it to map role GUIDs to friendly names; roles may show as GUIDs.");
+    setStatus("Note: SystemIdentity.mdb missing from the folder — role names may be blank/GUIDs. Continuing…","muted");
+  }
+  if(!outdir){ setStatus("Set an output directory","err"); return; }
+  if(!EXE||!fileExists(EXE)){ setStatus("SumECmd.exe not found — download it first","err"); return; }
+  var before=csvNameSet(outdir);
+  if(BUSY){ setStatus("A SumECmd run is already in progress — wait for it to finish.","err"); return; }
+  appendLog("Running: \""+EXE+"\" -d \""+sumDir+"\" --csv \""+outdir+"\""
+    +"\nA console window shows progress; the app stays responsive and loads results automatically when done.");
+  BUSY=true; $("procBtn").disabled=true;
+  var bsum=batEsc(sumDir), bout=batEsc(outdir);
+  var ctx=runBatAsync([
+    "set DOTNET_ROLL_FORWARD=Major",
+    'if not exist "'+bout+'" mkdir "'+bout+'"',
+    "echo SumECmd is processing:",
+    'echo   '+bsum,
+    "echo Output: "+bout,
+    "echo This window closes automatically when finished.",
+    "echo.",
+    '"'+batEsc(EXE)+'" -d "'+bsum+'" --csv "'+bout+'" > "__LOG__" 2>&1'
+  ], true);
+  ctx.onTick=function(s){ setStatus("SumECmd running… "+s+"s elapsed (app responsive; results load when done)","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("SumECmd still running after 30 min — stopped watching. Check the output folder / console window.","err"); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processSumDone(log,outdir,before,sumDir,false); };
+  setStatus("SumECmd starting…","muted");
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+function processSumDone(log,outdir,before,sumDir,wasRepair){
+  appendLog("--- SumECmd output"+(wasRepair?" (after repair)":"")+" ---\n"+log);
+  LASTOUTDIR=outdir;
+  var all=listCsvFiles(outdir);
+  var fresh=[]; for(var i=0;i<all.length;i++){ if(!before[all[i].name]) fresh.push(all[i]); }
+  if(!fresh.length){ diagnoseSumFailure(log,outdir,sumDir,wasRepair); populateProduced(all); return; }
+  var m=log.match(/Found ([\d,]+) Client detail entries/i);
+  var cnt=m?(" — "+m[1]+" client-detail entries"):"";
+  writeRunInfo(outdir, sumDir, fresh);
+  PRODUCED=fresh;
+  populateProduced(fresh);
+  // auto-load ClientsDetailed (the analytic core); everything else stays in the picker
+  var main=null;
+  for(var j=0;j<fresh.length;j++){ if(/_DETAIL_ClientsDetailed_Output\.csv$/i.test(fresh[j].name)){ if(!main||fresh[j].name>main.name) main=fresh[j]; } }
+  if(!main){ main=fresh[0]; for(var k=1;k<fresh.length;k++){ if(fresh[k].size>main.size) main=fresh[k]; } }
+  try{ $("producedSel").value=main.path; }catch(e){}
+  setStatus("Produced "+fresh.length+" CSV(s)"+(wasRepair?" from the repaired copy":"")+cnt+"; loaded "+main.name+".","ok");
+  loadCsvFile(main.path);
+  patchRunInfoSummary(buildRunSummary());   // rows are scored now — add the triage headline to the runinfo entry
+}
+
+/* ---------- ESE failure triage + repair-on-copy (spec §2; ported from SrumECmd-Wrapper) ----------
+   SUM databases from live servers are routinely DIRTY. SumECmd aborts on a dirty-shutdown ESE db.
+   Fixable by repairing a COPY of the whole .mdb set (transaction logs deliberately excluded so
+   ESE cannot try — and fail — to replay newer-engine logs), then re-running against the copy.
+   GROUND-TRUTHED against the real as-dbms Sum\ folder: esentutl /p <db>.mdb /o recovers the dirty
+   Current.mdb (JET_wrnDatabaseRepaired) and SumECmd then parses all chained year DBs. SUM's ESE
+   log base is 'svc' (not SRUM's 'sru') — SumECmd's own dirty-db hint recommends
+   'esentutl /r svc /i' then 'esentutl /p <dbname>.mdb'. */
+function diagnoseSumFailure(log,outdir,sumDir,wasRepair){
+  // engine-version wall: DB written by a NEWER Windows than this box — not fixable locally
+  if(/EsentInvalidDatabaseVersionException|JET_errInvalidDatabaseVersion|Database engine is incompatible/i.test(log)){
+    setStatus("These SUM databases were written by a NEWER Windows build than this analysis box — the local ESE engine cannot open them at all (JET_errInvalidDatabaseVersion), and esentutl repair fails the same way. Parse them on a Windows build at least as new as the source server (a VM works), or re-collect. Verify with:  esentutl /mh Current.mdb .","err");
+    return;
+  }
+  // dirty ESE database — fixable on a copy
+  if(/EsentDatabaseDirtyShutdown|not shutdown cleanly|database is dirty|Isam\.Esent|esentutl/i.test(log)){
+    if(wasRepair){
+      setStatus("SumECmd still failed after the automatic repair — see the log. Manual route on a COPY of the .mdb set: esentutl /r svc /i, then esentutl /p <dbname>.mdb /o on each; if that also fails, parse on a Windows build >= the source server.","err");
+      return;
+    }
+    if(sumDir && folderExists(sumDir)){
+      if(confirm("SumECmd hit a DIRTY ESE database — the classic state of SUM databases pulled from a live server.\n\nThis is usually fixable by repairing a COPY of the .mdb set:\n  1. copy every *.mdb (WITHOUT the .log/.chk/.jrs transaction files — those are what break replay)\n     into "+outdir+"\\SUM_repaired_<time>\\   (original evidence untouched)\n  2. esentutl /p <db>.mdb /o on each copy (discards uncommitted updates)\n  3. re-run SumECmd against the repaired copy\n\nAttempt automatic repair now?")){
+        runSumRepair(sumDir, outdir);
+        return;
+      }
+      setStatus("Dirty ESE database; automatic repair declined. Manual route on a COPY of the .mdb set: esentutl /r svc /i, then esentutl /p <db>.mdb /o, then re-run this app against the repaired copy.","err");
+      return;
+    }
+    setStatus("Dirty ESE database, but the source Sum\\ folder could not be resolved from the input. Repair manually on a COPY: esentutl /r svc /i, then esentutl /p <db>.mdb /o.","err");
+    return;
+  }
+  if(/denied|unauthorized|being used by another process/i.test(log)){
+    setStatus("SumECmd was denied access to the input — the file is locked (live SUM on a running server?) or needs an elevated run. Collect with Velociraptor/KAPE and process the copy.","err");
+    return;
+  }
+  setStatus("SumECmd produced no new CSV — check the log. Point at a Sum\\ folder that contains SystemIdentity.mdb + Current.mdb (+ any archived {GUID}.mdb).","err");
+}
+function runSumRepair(sumDir, outdir){
+  if(BUSY){ setStatus("A SumECmd run is already in progress — wait for it to finish.","err"); return; }
+  var repDir=outdir+"\\SUM_repaired_"+nowStamp();
+  var before=csvNameSet(outdir);
+  BUSY=true; $("procBtn").disabled=true;
+  appendLog("--- repair on a copy ---\ncopy *.mdb  "+sumDir+"  ->  "+repDir+"   (transaction logs deliberately excluded)\nesentutl /p <db>.mdb /o on each, then re-run SumECmd against the repaired copy.");
+  var brep=batEsc(repDir), bsrc=batEsc(sumDir), bout=batEsc(outdir);
+  var ctx=runBatAsync([
+    "set DOTNET_ROLL_FORWARD=Major",
+    'if not exist "'+brep+'" mkdir "'+brep+'"',
+    "echo Repairing a COPY of the SUM .mdb set (original evidence untouched) ...",
+    'copy /y "'+bsrc+'\\*.mdb" "'+brep+'\\" > "__LOG__" 2>&1',
+    'attrib -r "'+brep+'\\*.mdb" >> "__LOG__" 2>&1',
+    'cd /d "'+brep+'"',
+    "echo Running esentutl repair on each .mdb ...",
+    'for %%D in (*.mdb) do esentutl /p "%%D" /o >> "__LOG__" 2>&1',
+    "echo Re-running SumECmd on the repaired copy ...",
+    '"'+batEsc(EXE)+'" -d "'+brep+'" --csv "'+bout+'" >> "__LOG__" 2>&1'
+  ], true);
+  ctx.onTick=function(s){ setStatus("Repairing + reprocessing… "+s+"s elapsed (app responsive; results load when done)","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("Repair still running after 30 min — stopped watching. Check the console window.","err"); };
+  ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; processSumDone(log,outdir,before,repDir,true); };
+  setStatus("Repair starting…","muted");
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+function csvNameSet(dir){ var o={}, l=listCsvFiles(dir); for(var i=0;i<l.length;i++) o[l[i].name]=true; return o; }
+function listCsvFiles(dir){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), out=[];
+  if(!fso.FolderExists(dir)) return out;
+  var e=new Enumerator(fso.GetFolder(dir).Files);
+  for(; !e.atEnd(); e.moveNext()){ var f=e.item(); if(/\.csv$/i.test(f.Name+"")) out.push({name:f.Name+"", path:f.Path+"", size:f.Size}); }
+  out.sort(function(a,b){ return a.name<b.name?1:(a.name>b.name?-1:0); });   // newest timestamp-prefix first
+  return out;
+}
+function fmtSize(n){ if(!n) return "0 B"; var u=["B","KB","MB","GB"], i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+" "+u[i]; }
+var TABLE_INFO={
+  "detail_clientsdetailed":"per user x IP x role x DAY access counts (analytic core)",
+  "detail_clients":"one row per client (user x IP x role) with totals",
+  "detail_roleaccesses":"per role first / last seen",
+  "summary_chaineddbinfo":"archived year databases chained in",
+  "summary_roleinfos":"role GUID -> friendly name map",
+  "summary_systemidentinfo":"OS build / system-identity records"
+};
+function tableNameOf(csvName){ var m=String(csvName).match(RUN_RE); return m?m[2]:""; }
+function populateProduced(list){
+  var sel=$("producedSel"); sel.innerHTML="";
+  for(var i=0;i<list.length;i++){
+    var lab=list[i].name+"  ("+fmtSize(list[i].size)+")";
+    var tn=tableNameOf(list[i].name);
+    if(tn && TABLE_INFO[tn.toLowerCase()]) lab+="  —  "+TABLE_INFO[tn.toLowerCase()];
+    var o=document.createElement("option"); o.value=list[i].path; o.text=lab; sel.add(o);
+  }
+  showEl("producedRow", list.length>0);
+}
+function openDir(){ var d=$("outDir").value; if(!d){ setStatus("No output directory set","err"); return; }
+  try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+d+'"',1,false); }catch(e){ setStatus("Could not open folder: "+e.message,"err"); } }
+
+/* ---------- CSV parser (RFC4180) — line-split hybrid: native split for the bulk,
+   careful field parsing only for lines containing quotes; merges rows split across
+   newlines inside quoted fields. Orders of magnitude faster than char-by-char in MSHTML. */
+function countQuotes(s){ var c=0, idx=-1; while((idx=s.indexOf('"',idx+1))>=0) c++; return c; }
+function parseCSVLine(line){
+  if(line.indexOf('"')<0) return line.split(",");   // fast path: no quotes -> plain split
+  var out=[], field="", q=false, i=0, n=line.length;
+  while(i<n){ var c=line.charAt(i);
+    if(q){ if(c==='"'){ if(line.charAt(i+1)==='"'){ field+='"'; i+=2; continue; } q=false; i++; continue; } field+=c; i++; continue; }
+    if(c==='"'){ q=true; i++; continue; }
+    if(c===','){ out.push(field); field=""; i++; continue; }
+    field+=c; i++;
+  }
+  out.push(field); return out;
+}
+function parseCSV(text){
+  if(text.charCodeAt(0)===0xFEFF) text=text.substring(1);
+  var lines=text.split("\n"), rows=[], i=0, n=lines.length;
+  while(i<n){
+    var line=lines[i]; i++;
+    var qc=countQuotes(line);
+    while((qc%2)===1 && i<n){ line+="\n"+lines[i]; qc+=countQuotes(lines[i]); i++; }
+    if(line.charAt(line.length-1)==='\r') line=line.substring(0,line.length-1);
+    if(line==="") continue;
+    rows.push(parseCSVLine(line));
+  }
+  return rows;
+}
+
+/* ---------- ingest dispatch ---------- */
+function loadCsvFile(path){
+  try{
+    var text=readUtf8(path);
+    var raw=parseCSV(text);
+    if(!raw||!raw.length){ setStatus("Empty / unparseable CSV","err"); return; }
+    var idx={}, head=raw[0];
+    for(var h=0;h<head.length;h++) idx[trimStr(head[h])]=h;
+    // ClientsDetailed is the only CSV carrying Date + Count + AuthenticatedUserName + IpAddress
+    if(("Date" in idx) && ("Count" in idx) && ("AuthenticatedUserName" in idx) && ("IpAddress" in idx))
+      ingestSum(raw, idx, baseName(path));
+    else
+      ingestGeneric(raw, head, baseName(path));
+  }catch(e){ setStatus("Could not read CSV: "+e.message,"err"); }
+}
+function cell(rw,i){ return (i>=0&&i<rw.length)?rw[i]:""; }
+function numv(v){ var x=parseFloat(v); return isFinite(x)?x:0; }
+
+/* ---------- SUM ingest (spec §4): roll ClientsDetailed day rows up to CLIENT records ----------
+   Client key = user | IP | role | SourceFile — matches SumECmd's own "Clients" count exactly
+   (each chained year DB tracks the client separately). InsertDate / LastAccess / TotalAccesses
+   are client-level constants across a client's day rows; dayCount = distinct Date rows. */
+function ingestSum(raw, idx, srcLabel){
+  function gi(n){ return (n in idx)?idx[n]:-1; }
+  var iDate=gi("Date"), iCount=gi("Count"), iRG=gi("RoleGuid"), iRD=gi("RoleDescription"),
+      iUser=gi("AuthenticatedUserName"), iTA=gi("TotalAccesses"), iIns=gi("InsertDate"),
+      iLA=gi("LastAccess"), iIP=gi("IpAddress"), iCN=gi("ClientName"), iTen=gi("TenantId"), iSF=gi("SourceFile");
+  var map={}, order=[];
+  for(var r=1;r<raw.length;r++){
+    var rw=raw[r]; if(rw.length<3) continue;
+    var user=trimStr(cell(rw,iUser));
+    var ip=trimStr(cell(rw,iIP));
+    var roleD=trimStr(cell(rw,iRD)), roleG=trimStr(cell(rw,iRG));
+    var role=roleD||roleG;
+    var sf=trimStr(cell(rw,iSF));
+    if(!user && !ip && !role) continue;
+    var key=user+"|"+ip+"|"+role+"|"+sf;
+    var rec=map[key];
+    if(!rec){
+      rec={
+        user:user, userL:user.toLowerCase(), ip:ip, ipSort:ipSortKey(ip),
+        role:role, roleL:role.toLowerCase(), roleGuid:roleG,
+        firstSeen:trimStr(cell(rw,iIns)), lastSeen:trimStr(cell(rw,iLA)),
+        totalAccesses:numv(cell(rw,iTA)), dayCount:0,
+        clientName:trimStr(cell(rw,iCN)), tenantId:trimStr(cell(rw,iTen)), srcFile:sf, srcL:sf.toLowerCase(),
+        days:[], tags:[], reasons:[], score:0, sus:false,
+        external:false, admin:false, oneday:false, ipv6:false
+      };
+      map[key]=rec; order.push(rec);
+    }
+    // per-day accumulation
+    var dstr=trimStr(cell(rw,iDate)), dcount=numv(cell(rw,iCount));
+    if(dstr){ rec.days.push({d:dstr, c:dcount}); rec.dayCount++; }
+    // client-level fields are constant, but take the widest span defensively
+    var ins=trimStr(cell(rw,iIns)), la=trimStr(cell(rw,iLA)), ta=numv(cell(rw,iTA));
+    if(ins && (!rec.firstSeen || msOf(ins)<msOf(rec.firstSeen))) rec.firstSeen=ins;
+    if(la && msOf(la)>msOf(rec.lastSeen)) rec.lastSeen=la;
+    if(ta>rec.totalAccesses) rec.totalAccesses=ta;
+    if(!rec.roleGuid && roleG) rec.roleGuid=roleG;
+  }
+  ROWS=[];
+  for(var o=0;o<order.length;o++){
+    var rc=order[o];
+    rc.msFirst=msOf(rc.firstSeen); rc.msLast=msOf(rc.lastSeen);
+    rc.dayFirst=dayOf(rc.firstSeen); rc.dayLast=dayOf(rc.lastSeen);
+    rc.days.sort(function(a,b){ return dayOf(a.d)-dayOf(b.d); });
+    rc.blob=(rc.user+" "+rc.ip+" "+rc.role+" "+rc.roleGuid+" "+rc.clientName+" "+rc.srcFile).toLowerCase();
+    ROWS.push(rc);
+  }
+  if(!ROWS.length){ ingestGeneric(raw, raw[0], srcLabel); return; }
+  rescoreAll();
+  setMode("sum");
+  populateSourceFilter([]);
+  $("results").className="";
+  var du=distinctBy(ROWS,"userL"), di=distinctBy(ROWS,"ip");
+  $("srcpill").innerHTML=nf(ROWS.length)+" clients &middot; "+nf(du)+" users &middot; "+nf(di)+" IPs &middot; "+esc(srcLabel);
+  QUERY=""; $("q").value=""; DFROM=0; DTO=0; $("dfrom").value=""; $("dto").value="";
+  CURCAT="all"; highlightCat();
+  SORT={clients:{k:0,d:1}, time:{k:5,d:-1}}; USORTKEY=6; USORTDIR=-1;
+  setView("clients", true);
+  closeDetail();
+  setStatus("Loaded "+nf(ROWS.length)+" client records ("+nf(du)+" users, "+nf(di)+" source IPs)","ok");
+  render();
+}
+function distinctBy(rows,fld){ var seen={}, n=0; for(var i=0;i<rows.length;i++){ var v=rows[i][fld]; if(v!=null && v!=="" && !seen[v]){ seen[v]=1; n++; } } return n; }
+
+/* ---------- scoring U1–U5 (spec §6; sus threshold score >= 3) ---------- */
+function rescoreAll(){ for(var i=0;i<ROWS.length;i++) scoreRec(ROWS[i]); }
+function scoreRec(rec){
+  var tags=[], reasons=[], score=0;
+  rec.external=isExternalIp(rec.ip);
+  rec.ipv6=isRoutableV6(rec.ip);
+  rec.admin=isAdminAcct(rec.userL);
+  rec.oneday=(rec.dayFirst>0 && rec.dayFirst===rec.dayLast);
+  // U1 IOC / keyword hit
+  if(IOCS.length){
+    var hits=[], t;
+    for(t=0;t<IOCS.length;t++){ var term=IOCS[t]; if(rec.blob.indexOf(term)>=0){ hits.push(term); if(hits.length>=3) break; } }
+    if(hits.length){ score+=3; tags.push("IOC"); reasons.push("IOC/keyword hit: "+hits.join(", ")); }
+  }
+  // U2 public / routable source IP
+  if(rec.external){ score+=2; tags.push("EXTERNAL"); reasons.push("Source IP is public / routable (not RFC1918 / loopback / link-local): "+rec.ip); }
+  // U3 admin-pattern account
+  if(rec.admin){ score+=1; tags.push("ADMIN"); reasons.push("Admin-pattern account name: "+rec.user); }
+  // U4 single-day burst
+  if(rec.oneday){ score+=1; tags.push("ONEDAY"); reasons.push("First seen and last seen on the SAME day ("+rec.firstSeen+") — one-off / burst access"); }
+  // U5 routable IPv6
+  if(rec.ipv6){ score+=1; tags.push("IPV6"); reasons.push("Routable IPv6 source (uncommon in these environments): "+rec.ip); }
+  rec.tags=tags; rec.reasons=reasons; rec.score=score; rec.sus=(score>=3);
+}
+
+/* ---------- aggregates / overview ---------- */
+function topList(obj,n){ var a=[],k; for(k in obj){ if(obj.hasOwnProperty(k)) a.push([k,obj[k]]); }
+  a.sort(function(x,y){ return y[1]-x[1]; }); return a.slice(0,n); }
+function stat(n,l){ return '<span class="stat"><span class="n">'+esc(n)+'</span><span class="l">'+esc(l)+'</span></span>'; }
+function bar(label,frac,val,q){
+  var lc=q?' lnk" data-q="'+esc(q):'';
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'">'+esc(label)+'</span>'
+    +'<span class="btrack"><span class="bfill" style="width:'+(frac*100).toFixed(1)+'%"></span></span>'
+    +'<span class="bval">'+esc(val)+'</span></div>';
+}
+function listRow(label,val,q,cls){
+  var lc=q?' lnk" data-q="'+esc(q):'';
+  return '<div class="brow"><span class="blab'+lc+'" title="'+esc(label)+'" style="width:52%">'+esc(label)+'</span>'
+    +'<span class="bval" style="width:44%;'+(cls||"")+'">'+esc(val)+'</span></div>';
+}
+function fmtShortTs(s){ var m=String(s).match(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/); return m?(m[1]+" "+m[2]):String(s); }
+function msToTs(ms){ var d=new Date(ms); function p(x){return (x<10?"0":"")+x;}
+  return d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate())+" "+p(d.getUTCHours())+":"+p(d.getUTCMinutes())+":"+p(d.getUTCSeconds()); }
+function hasTag(r,t){ for(var i=0;i<r.tags.length;i++){ if(r.tags[i]===t) return true; } return false; }
+function renderSumAgg(rows){
+  var i, r;
+  var users={}, ips={}, userAcc={}, ipCli={}, susN=0, iocN=0, extN=0, minMs=0, maxMs=0;
+  for(i=0;i<rows.length;i++){ r=rows[i];
+    users[r.userL]=1; ips[r.ip]=1;
+    userAcc[r.user]=(userAcc[r.user]||0)+r.totalAccesses;
+    ipCli[r.ip]=(ipCli[r.ip]||0)+1;
+    if(r.sus) susN++;
+    if(hasTag(r,"IOC")) iocN++;
+    if(r.external) extN++;
+    if(r.msFirst){ if(!minMs||r.msFirst<minMs) minMs=r.msFirst; }
+    if(r.msLast){ if(r.msLast>maxMs) maxMs=r.msLast; }
+  }
+  var du=0,di=0,k; for(k in users){ if(users.hasOwnProperty(k)) du++; } for(k in ips){ if(ips.hasOwnProperty(k)) di++; }
+  var rng=(minMs? (fmtShortTs(msToTs(minMs))+" → "+fmtShortTs(msToTs(maxMs))) : "—");
+  $("statbar").innerHTML=
+    stat(nf(rows.length),"clients")+stat(nf(du),"users")+stat(nf(di),"source IPs")+
+    stat(nf(susN),"suspicious")+(IOCS.length?stat(nf(iocN),"IOC hits"):"")+(extN?stat(nf(extN),"external IPs"):"")+
+    '<span class="stat" style="min-width:300px"><span class="n" style="font-size:12px">'+esc(rng)+'</span><span class="l">access range (UTC, first→last)</span></span>';
+  // col 1: top users by total accesses
+  var top=topList(userAcc,12), h="", max=top.length?top[0][1]:1;
+  for(i=0;i<top.length;i++){ h+=bar(top[i][0], max?top[i][1]/max:0, nf(top[i][1]), top[i][0]); }
+  $("topExes").innerHTML=h||'<span class="muted">none</span>';
+  // col 2: top source IPs by client count
+  var top2=topList(ipCli,12), h2="", max2=top2.length?top2[0][1]:1;
+  for(i=0;i<top2.length;i++){ h2+=bar(top2[i][0], max2?top2[i][1]/max2:0, nf(top2[i][1]), top2[i][0]); }
+  $("topNew").innerHTML=h2||'<span class="muted">none</span>';
+  // col 3: suspicious clients, score-ranked
+  var sus=[]; for(i=0;i<rows.length;i++){ if(rows[i].sus) sus.push(rows[i]); }
+  sus.sort(function(a,b){ return b.score-a.score || b.msLast-a.msLast; });
+  h=""; for(i=0;i<sus.length&&i<12;i++){ r=sus[i];
+    h+=listRow(r.user+"@"+r.ip+"  ["+r.tags.join(",")+"]", "score "+r.score, r.user, "color:#ff6b6b"); }
+  $("topSus").innerHTML=h||'<span class="ok">No suspicious clients</span>';
+}
+
+/* ---------- clients / timeline table (shared columns) ---------- */
+var COLS=[
+  {h:"Tags", sk:function(r){return -r.score;}, cell:function(r){return '<td class="first">'+tagHtml(r)+'</td>';}},
+  {h:"User", sk:function(r){return r.userL;}, cell:function(r){return '<td class="mono lnk" data-q="'+esc(r.user)+'" title="'+esc(r.user)+'">'+esc(r.user)+'</td>';}},
+  {h:"Source IP", sk:function(r){return r.ipSort;}, cell:function(r){return '<td class="mono lnk" data-q="'+esc(r.ip)+'" title="'+esc(r.ip)+'">'+esc(r.ip)+'</td>';}},
+  {h:"Role", sk:function(r){return r.roleL;}, cell:function(r){return '<td class="mono" title="'+esc(r.role)+(r.roleGuid?("  ("+esc(r.roleGuid)+")"):"")+'">'+esc(r.role)+'</td>';}},
+  {h:"First seen (UTC)", sk:function(r){return r.msFirst;}, cell:function(r){return '<td class="mono">'+esc(r.firstSeen)+'</td>';}},
+  {h:"Last seen (UTC)", sk:function(r){return r.msLast;}, cell:function(r){return '<td class="mono">'+esc(r.lastSeen)+'</td>';}},
+  {h:"Accesses", sk:function(r){return r.totalAccesses;}, cell:function(r){return '<td class="mono" style="text-align:right">'+esc(nf(r.totalAccesses))+'</td>';}},
+  {h:"Days", sk:function(r){return r.dayCount;}, cell:function(r){return '<td class="mono" style="text-align:right">'+esc(nf(r.dayCount))+'</td>';}},
+  {h:"Source", sk:function(r){return r.srcL;}, cell:function(r){return '<td class="mono muted" title="'+esc(r.srcFile)+'">'+esc(r.srcFile)+'</td>';}}
+];
+function tagHtml(r){
+  var t="",i;
+  if(r.sus) t+='<span class="tag sus" title="'+esc(r.reasons.join("; "))+'">SUS '+r.score+'</span>';
+  for(i=0;i<r.tags.length;i++){ var g=r.tags[i], cls="gen";
+    if(g==="IOC"||g==="EXTERNAL") cls="ioc"; else if(g==="ADMIN") cls="usr";
+    else if(g==="ONEDAY") cls="rare"; else if(g==="IPV6") cls="lol";
+    t+='<span class="tag '+cls+'" title="'+esc(r.reasons.join("; "))+'">'+esc(g)+'</span>'; }
+  return t;
+}
+function catPass(r){
+  if(CURCAT==="sus"&&!r.sus) return false;
+  if(CURCAT==="external"&&!r.external) return false;
+  if(CURCAT==="admin"&&!r.admin) return false;
+  if(CURCAT==="oneday"&&!r.oneday) return false;
+  if(CURCAT==="ipv6"&&!r.ipv6) return false;
+  if(CURCAT==="ioc"&&!hasTag(r,"IOC")) return false;
+  return true;
+}
+function filteredClients(){
+  var out=[];
+  for(var i=0;i<ROWS.length;i++){
+    var r=ROWS[i];
+    if(!catPass(r)) continue;
+    if(DFROM&&(!r.dayLast||r.dayLast<DFROM)) continue;
+    if(DTO&&(!r.dayLast||r.dayLast>DTO)) continue;
+    if(QUERY){ if(r.blob.indexOf(QUERY)<0) continue; }
+    out.push(r);
+  }
+  return out;
+}
+function updateCatCounts(){
+  var c={all:ROWS.length,sus:0,external:0,admin:0,oneday:0,ipv6:0,ioc:0};
+  for(var i=0;i<ROWS.length;i++){ var r=ROWS[i];
+    if(r.sus)c.sus++; if(r.external)c.external++; if(r.admin)c.admin++;
+    if(r.oneday)c.oneday++; if(r.ipv6)c.ipv6++; if(hasTag(r,"IOC"))c.ioc++; }
+  var names={all:"All",sus:"Suspicious",external:"External IP",admin:"Admin-pattern",oneday:"One-day",ipv6:"IPv6",ioc:"IOC hits"};
+  var bs=$("pfCats").getElementsByTagName("button");
+  for(var j=0;j<bs.length;j++){ var k=bs[j].getAttribute("data-cat");
+    if(k) bs[j].innerHTML=names[k]+" ("+nf(c[k])+")"; }
+}
+function highlightCat(){
+  var bs=$("pfCats").getElementsByTagName("button");
+  for(var j=0;j<bs.length;j++){ if(bs[j].getAttribute("data-cat")) bs[j].className=(bs[j].getAttribute("data-cat")===CURCAT)?"btn on":"btn"; }
+}
+function setView(v, quiet){
+  VIEW=v;
+  $("vExec").className=(v==="clients")?"btn on":"btn";
+  $("vTime").className=(v==="time")?"btn on":"btn";
+  $("vUsers").className=(v==="users")?"btn on":"btn";
+  $("tableTitle").innerHTML=(v==="users")?"Users (grouped)":((v==="time")?"Client timeline (by last seen)":"Clients");
+  showEl("pfCats", v!=="users");
+  if(!quiet) render();
+}
+function render(){
+  if(MODE==="generic"){ renderGeneric(); return; }
+  if(!ROWS.length) return;
+  if(VIEW==="users"){ renderUsers(); return; }
+  renderClients();
+}
+function renderClients(){
+  var rows=filteredClients();
+  renderSumAgg(rows);
+  updateCatCounts();
+  var st=SORT[VIEW]||SORT.clients;
+  var sk=COLS[st.k].sk, dir=st.d;
+  rows.sort(function(a,b){ var x=sk(a),y=sk(b);
+    if(typeof x==="number"&&typeof y==="number") return (x-y)*dir;
+    x=String(x); y=String(y); return x<y?-dir:(x>y?dir:0); });
+  var shown=rows.length>MAXROWS?MAXROWS:rows.length;
+  var html="<thead><tr>";
+  for(var c=0;c<COLS.length;c++){
+    var arrow=(st.k===c)?(st.d>0?" ▲":" ▼"):"";
+    html+='<th data-k="'+c+'">'+esc(COLS[c].h)+arrow+'</th>';
+  }
+  html+="</tr></thead><tbody>";
+  for(var i=0;i<shown;i++){
+    var r=rows[i];
+    html+='<tr data-i="'+i+'"'+(r.sus?' class="sus"':'')+' style="cursor:pointer">';
+    for(var k=0;k<COLS.length;k++){ html+=COLS[k].cell(r); }
+    html+="</tr>";
+  }
+  html+="</tbody>";
+  $("tbl").innerHTML=html;
+  $("count").innerHTML=nf(rows.length)+" clients"+(shown<rows.length?(" (showing "+nf(shown)+")"):"");
+  wireHeadersClients();
+  setupColResize();
+  applyFreeze();
+  window.__viewRows=rows;
+}
+function wireHeadersClients(){
+  var ths=$("tbl").getElementsByTagName("th");
+  for(var i=0;i<ths.length;i++){ ths[i].onclick=function(e){
+    e=e||window.event; var t=e.target||e.srcElement;
+    if(t && /\bcgrip\b/.test(t.className+"")) return;   // resize-grip interactions must not sort
+    var k=parseInt(this.getAttribute("data-k"),10);
+    var st=SORT[VIEW]||SORT.clients;
+    if(st.k===k) st.d*=-1; else { st.k=k; st.d=1; }
+    renderClients();
+  }; }
+}
+function applyFreeze(){
+  var sc=$("tblScroll"); if(!sc) return;
+  var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
+  for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; }
+}
+
+/* ---------- users view (grouped per authenticated user) ---------- */
+var UCOLS=[
+  {h:"User", sk:function(g){return g.userL;}, cell:null},
+  {h:"Distinct IPs", sk:function(g){return g.nIps;}, cell:null},
+  {h:"Distinct roles", sk:function(g){return g.nRoles;}, cell:null},
+  {h:"Total accesses", sk:function(g){return g.accesses;}, cell:null},
+  {h:"First seen (UTC)", sk:function(g){return g.msFirst;}, cell:null},
+  {h:"Last seen (UTC)", sk:function(g){return g.msLast;}, cell:null},
+  {h:"Sus clients", sk:function(g){return g.sus;}, cell:null},
+  {h:"Max score", sk:function(g){return g.maxScore;}, cell:null}
+];
+function buildUserGroups(rows){
+  var map={}, order=[];
+  for(var i=0;i<rows.length;i++){ var r=rows[i];
+    var g=map[r.userL];
+    if(!g){ g={user:r.user, userL:r.userL, ips:{}, roles:{}, nIps:0, nRoles:0, accesses:0,
+             msFirst:0, msLast:0, sus:0, maxScore:0, n:0}; map[r.userL]=g; order.push(g); }
+    if(r.ip && !g.ips[r.ip]){ g.ips[r.ip]=1; g.nIps++; }
+    if(r.role && !g.roles[r.role]){ g.roles[r.role]=1; g.nRoles++; }
+    g.accesses+=r.totalAccesses; g.n++;
+    if(r.msFirst){ if(!g.msFirst||r.msFirst<g.msFirst) g.msFirst=r.msFirst; }
+    if(r.msLast>g.msLast) g.msLast=r.msLast;
+    if(r.sus) g.sus++;
+    if(r.score>g.maxScore) g.maxScore=r.score;
+  }
+  return order;
+}
+function renderUsers(){
+  var rows=filteredClients();
+  renderSumAgg(rows);
+  updateCatCounts();
+  var groups=buildUserGroups(rows);
+  var sk=UCOLS[USORTKEY].sk, dir=USORTDIR;
+  groups.sort(function(a,b){ var x=sk(a),y=sk(b);
+    if(typeof x==="number"&&typeof y==="number") return (x-y)*dir;
+    x=String(x); y=String(y); return x<y?-dir:(x>y?dir:0); });
+  var html="<thead><tr>";
+  for(var c=0;c<UCOLS.length;c++){
+    var arrow=(USORTKEY===c)?(USORTDIR>0?" ▲":" ▼"):"";
+    html+='<th data-k="'+c+'">'+esc(UCOLS[c].h)+arrow+'</th>';
+  }
+  html+="</tr></thead><tbody>";
+  for(var i=0;i<groups.length;i++){
+    var g=groups[i], qq=esc(g.user);
+    html+='<tr'+(g.sus?' class="sus"':'')+' style="cursor:pointer" title="Click to see this user\'s clients">';
+    html+='<td class="first mono" data-userq="'+qq+'">'+esc(g.user)+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.nIps))+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.nRoles))+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.accesses))+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'">'+esc(g.msFirst?msToTs(g.msFirst):"")+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'">'+esc(g.msLast?msToTs(g.msLast):"")+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right'+(g.sus?';color:#ff6b6b':'')+'">'+esc(nf(g.sus))+'</td>';
+    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(g.maxScore)+'</td>';
+    html+="</tr>";
+  }
+  html+="</tbody>";
+  $("tbl").innerHTML=html;
+  $("count").innerHTML=nf(groups.length)+" users ("+nf(rows.length)+" clients)";
+  var ths=$("tbl").getElementsByTagName("th");
+  for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){
+    e=e||window.event; var t=e.target||e.srcElement;
+    if(t && /\bcgrip\b/.test(t.className+"")) return;
+    var kk=parseInt(this.getAttribute("data-k"),10);
+    if(USORTKEY===kk) USORTDIR*=-1; else { USORTKEY=kk; USORTDIR=1; }
+    renderUsers();
+  }; }
+  setupColResize();
+  applyFreeze();
+  window.__viewRows=groups;
+}
+
+/* ---------- settings sidecar (currently: per-view column widths) ----------
+   Tiny JSON next to the .hta; silently a no-op where the folder is unwritable. */
+var SETTINGS={};
+function settingsPath(){ var d=htaFolder(); return d?(d+"\\SumECmd-Wrapper.settings.json"):""; }
+function loadSettings(){
+  try{ var p=settingsPath();
+    if(p && fileExists(p)){ var o=JSON.parse(readUtf8(p)); if(o && typeof o==="object") SETTINGS=o; }
+  }catch(e){ SETTINGS={}; }
+  if(!SETTINGS) SETTINGS={};
+  if(SETTINGS.colw && typeof SETTINGS.colw==="object") COLW=SETTINGS.colw;
+}
+function saveSettings(){ try{ var p=settingsPath(); if(p) writeUtf8(p, JSON.stringify(SETTINGS)); }catch(e){} }
+
+/* ---------- resizable columns (family) ----------
+   Drag a header's right edge to resize; double-click the edge to reset the view's widths.
+   Widths are stored per view ({clients,time,users,generic}); a stored array whose length no
+   longer matches the header count is ignored (auto-reset for that view). */
+var COLW={};      // per-view px widths once the user resizes (persisted in SETTINGS.colw)
+var DRAG=null;    // active column-drag state
+function colwKey(){ return (MODE==="generic")?"generic":((VIEW==="users")?"users":((VIEW==="time")?"time":"clients")); }
+function curZoom(){
+  try{ var el=$("content");
+    var z=parseFloat(el.style.zoom||(el.currentStyle&&el.currentStyle.zoom)||"");
+    if(!z && window.getComputedStyle) z=parseFloat(getComputedStyle(el).zoom);
+    return (z&&z>0)?z:1;
+  }catch(e){ return 1; }
+}
+function setupColResize(){
+  var tbl=$("tbl"); if(!tbl) return;
+  var ths=tbl.getElementsByTagName("th"); if(!ths.length) return;
+  var key=colwKey(), w=COLW[key];
+  if(w && w.length===ths.length){
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=w[j]+"px";
+  } else {
+    tbl.style.tableLayout=""; tbl.style.width="";   // the one table is shared by all views — undo a previous view's fixed layout
+  }
+  for(var i=0;i<ths.length;i++){
+    var g=document.createElement("div");
+    g.className="cgrip"; g.setAttribute("data-ci",String(i));
+    g.title="Drag to resize column — double-click to reset all widths";
+    g.onmousedown=gripDown; g.ondblclick=gripReset;
+    ths[i].appendChild(g);
+  }
+}
+function gripDown(e){
+  e=e||window.event;
+  var ci=parseInt(this.getAttribute("data-ci"),10);
+  var tbl=$("tbl"), ths=tbl.getElementsByTagName("th");
+  if(isNaN(ci)||ci<0||ci>=ths.length) return false;
+  var key=colwKey(), w=COLW[key];
+  if(!w || w.length!==ths.length){          // first drag: freeze the browser's current widths
+    w=[]; for(var i=0;i<ths.length;i++) w.push(ths[i].offsetWidth);
+    COLW[key]=w;
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=w[j]+"px";
+  }
+  DRAG={key:key, ci:ci, x:(e.clientX||0), w:w[ci], th:ths[ci], z:curZoom()};
+  document.onmousemove=gripMove; document.onmouseup=gripUp;
+  document.onselectstart=function(){ return false; };
+  if(e.preventDefault) e.preventDefault(); e.returnValue=false;
+  if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true;
+  return false;
+}
+function gripMove(e){
+  e=e||window.event; if(!DRAG) return false;
+  var w=Math.round(DRAG.w+((e.clientX||0)-DRAG.x)/DRAG.z);
+  if(w<40) w=40; if(w>1600) w=1600;
+  COLW[DRAG.key][DRAG.ci]=w; DRAG.th.style.width=w+"px";
+  return false;
+}
+function gripUp(){
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null;
+  if(DRAG){ DRAG=null; SETTINGS.colw=COLW; try{ saveSettings(); }catch(e){} }
+}
+function gripReset(e){
+  e=e||window.event;
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null; DRAG=null;
+  COLW[colwKey()]=null; SETTINGS.colw=COLW; try{ saveSettings(); }catch(er){}
+  var tbl=$("tbl"); if(tbl){ tbl.style.tableLayout=""; tbl.style.width=""; }
+  render();
+  setStatus("Column widths reset","ok");
+  if(e){ if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; }
+  return false;
+}
+
+/* ---------- detail pane ---------- */
+function renderDetail(rec){
+  DETREC=rec;
+  var h='<div class="mono" style="font-size:14px;margin-bottom:6px"><b>'+esc(rec.user||"(no user)")+'</b>'
+    +'  <span class="muted">@</span>  '+esc(rec.ip||"(no IP)")
+    +'  <span class="muted">—</span>  '+esc(rec.role||"(no role)")+'</div>';
+  h+='<div style="margin-bottom:6px">'+tagHtml(rec)+'</div>';
+  if(rec.reasons.length){ h+='<div style="font-size:12px;color:#ff9b9b;margin-bottom:6px">';
+    for(var q=0;q<rec.reasons.length;q++) h+="&bull; "+esc(rec.reasons[q])+"<br>"; h+='</div>'; }
+  h+='<div class="mono muted" style="font-size:11px;margin-bottom:8px">'
+    +'first seen '+esc(rec.firstSeen)+' (UTC) &middot; last seen '+esc(rec.lastSeen)+' (UTC)'
+    +' &middot; '+esc(nf(rec.totalAccesses))+' total accesses over '+esc(nf(rec.dayCount))+' day(s)'
+    +(rec.roleGuid?(' &middot; role GUID '+esc(rec.roleGuid)):'')
+    +(rec.clientName?(' &middot; client '+esc(rec.clientName)):'')
+    +(rec.tenantId?(' &middot; tenant '+esc(rec.tenantId)):'')
+    +'<br>source '+esc(rec.srcFile)+'</div>';
+  h+='<h3>Per-day accesses ('+rec.days.length+' day rows) — UTC</h3><div class="dl">';
+  if(rec.days.length){ for(var i=0;i<rec.days.length;i++){ var d=rec.days[i];
+    h+='<div class="mono">'+esc(d.d)+'  <span class="muted">×</span> '+esc(nf(d.c))+'</div>'; } }
+  else h+='<div class="muted">(no per-day rows)</div>';
+  h+='</div>';
+  $("detBody").innerHTML=h;
+  showEl("detailCard",true);
+}
+function closeDetail(){ DETREC=null; showEl("detailCard",false); $("detBody").innerHTML=""; }
+function copyDetail(){
+  if(!DETREC){ setStatus("No record open","err"); return; }
+  var r=DETREC, out=[];
+  out.push(r.user+" @ "+r.ip+"  —  "+r.role);
+  out.push("tags: "+(r.tags.length?r.tags.join(", "):"none")+"  score "+r.score);
+  for(var q=0;q<r.reasons.length;q++) out.push("  - "+r.reasons[q]);
+  out.push("first seen "+r.firstSeen+" (UTC); last seen "+r.lastSeen+" (UTC); "+r.totalAccesses+" accesses over "+r.dayCount+" day(s)");
+  out.push("role GUID "+r.roleGuid+"; source "+r.srcFile+(r.tenantId?("; tenant "+r.tenantId):""));
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Record copied to clipboard","ok"); }
+  catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+
+/* ---------- generic grid (non-ClientsDetailed CSVs: Clients / RoleAccesses / SUMMARY tables) ---------- */
+function isNumStr(s){ s=trimStr(String(s)); return s!=="" && /^-?\d+(\.\d+)?$/.test(s); }
+function ingestGeneric(raw, head, srcLabel){
+  setMode("generic");
+  GHEAD=head; GROWS=[];
+  for(var i=1;i<raw.length;i++){ var rw=raw[i]; if(rw.length>=1 && !(rw.length===1 && rw[0]==="")) GROWS.push(rw); }
+  GSRC=srcLabel;
+  GSRCIDX=-1; for(var c=0;c<head.length;c++){ if(/^SourceFile(name)?$/i.test(trimStr(head[c]))){ GSRCIDX=c; break; } }
+  if(GSRCIDX>=0){ var sv=[]; for(var s=0;s<GROWS.length;s++) sv.push(GSRCIDX<GROWS[s].length?GROWS[s][GSRCIDX]:""); populateSourceFilter(distinctVals(sv)); }
+  else populateSourceFilter([]);
+  $("results").className="";
+  $("srcpill").innerHTML=nf(GROWS.length)+" rows &middot; "+esc(srcLabel)+" ("+GHEAD.length+" cols)";
+  QUERY=""; $("q").value=""; GSORTKEY=-1;
+  closeDetail();
+  setStatus("Loaded "+nf(GROWS.length)+" rows (generic table view)","ok");
+  renderGeneric();
+}
+function renderGeneric(){
+  if(!GHEAD) return;
+  var q=QUERY, rows=[];
+  for(var i=0;i<GROWS.length;i++){ var rw=GROWS[i];
+    if(SRCFILTER && GSRCIDX>=0 && (GSRCIDX<rw.length?rw[GSRCIDX]:"")!==SRCFILTER) continue;
+    if(q){ if(rw.join("  ").toLowerCase().indexOf(q)<0) continue; }
+    rows.push(rw);
+  }
+  if(GSORTKEY>=0){ var k=GSORTKEY, dir=GSORTDIR; rows=rows.slice(0);
+    rows.sort(function(a,b){ var x=(k<a.length?a[k]:""), y=(k<b.length?b[k]:"");
+      if(isNumStr(x)&&isNumStr(y)) return (parseFloat(x)-parseFloat(y))*dir;
+      x=String(x).toLowerCase(); y=String(y).toLowerCase(); return x<y?-dir:(x>y?dir:0); });
+  }
+  $("statbar").innerHTML=stat(nf(GROWS.length),"rows")+stat(nf(GHEAD.length),"columns")+stat(nf(rows.length),"matching")+
+    '<span class="stat" style="min-width:240px"><span class="n" style="font-size:12px">'+esc(GSRC)+'</span><span class="l">source</span></span>';
+  var shown=rows.length>MAXROWS?MAXROWS:rows.length;
+  var h="<thead><tr>";
+  for(var c=0;c<GHEAD.length;c++){ var ar=(GSORTKEY===c)?(GSORTDIR>0?" ▲":" ▼"):""; h+='<th data-k="'+c+'">'+esc(GHEAD[c])+ar+'</th>'; }
+  h+="</tr></thead><tbody>";
+  for(var r=0;r<shown;r++){ var row=rows[r]; h+="<tr>";
+    for(var c2=0;c2<GHEAD.length;c2++){ var v=(c2<row.length?row[c2]:""); h+='<td class="mono" title="'+esc(v)+'">'+esc(v)+'</td>'; }
+    h+="</tr>"; }
+  h+="</tbody>"; $("tbl").innerHTML=h;
+  $("count").innerHTML=nf(rows.length)+" rows"+(shown<rows.length?(" (showing "+nf(shown)+")"):"");
+  var ths=$("tbl").getElementsByTagName("th");
+  for(var i2=0;i2<ths.length;i2++){ ths[i2].onclick=function(e){
+    e=e||window.event; var t=e.target||e.srcElement;
+    if(t && /\bcgrip\b/.test(t.className+"")) return;   // resize-grip interactions must not sort
+    var kk=parseInt(this.getAttribute("data-k"),10);
+    if(GSORTKEY===kk) GSORTDIR*=-1; else { GSORTKEY=kk; GSORTDIR=1; } renderGeneric(); }; }
+  setupColResize();
+  applyFreeze();
+  window.__viewRows=rows;
+}
+function setMode(m){
+  MODE=m; var sm=(m==="sum");
+  showEl("pfCards",sm); showEl("pfCats",sm && VIEW!=="users"); showEl("pfDateCtl",sm); showEl("pfFoot",sm);
+  showEl("iocBtn",sm); showEl("viewToggle",sm);
+  if(!sm){ showEl("iocWrap",false); closeDetail(); }
+  if(sm) showEl("srcWrap",false);
+  $("ovTitle").innerHTML = sm ? "Overview &mdash; reflects active filters" : "Overview";
+  $("tableTitle").innerHTML = sm ? ((VIEW==="users")?"Users (grouped)":((VIEW==="time")?"Client timeline (by last seen)":"Clients")) : "Records";
+}
+
+/* ---------- export / copy ---------- */
+function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
+function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
+  return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function exportView(){
+  if(MODE==="generic"){ exportGeneric(); return; }
+  if(VIEW==="users"){ exportUsers(); return; }
+  var rows=window.__viewRows||[];
+  if(!rows.length){ setStatus("Nothing to export","err"); return; }
+  var head=["User","SourceIP","Role","RoleGuid","FirstSeen_UTC","LastSeen_UTC","TotalAccesses","DayCount","Tags","Score","Suspicious","SourceFile"];
+  var lines=[head.join(",")];
+  for(var i=0;i<rows.length;i++){ var r=rows[i];
+    lines.push([cq(r.user),cq(r.ip),cq(r.role),cq(r.roleGuid),cq(r.firstSeen),cq(r.lastSeen),cq(r.totalAccesses),cq(r.dayCount),
+      cq(r.tags.join("; ")),cq(r.score),cq(r.sus?"Yes":"No"),cq(r.srcFile)].join(",")); }
+  var dir=LASTOUTDIR||$("outDir").value;
+  var path=dir+"\\filtered_export_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(rows.length)+" clients → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function exportUsers(){
+  var groups=window.__viewRows||[];
+  if(!groups.length){ setStatus("Nothing to export","err"); return; }
+  var head=["User","DistinctIPs","DistinctRoles","TotalAccesses","FirstSeen_UTC","LastSeen_UTC","SuspiciousClients","MaxScore"];
+  var lines=[head.join(",")];
+  for(var i=0;i<groups.length;i++){ var g=groups[i];
+    lines.push([cq(g.user),cq(g.nIps),cq(g.nRoles),cq(g.accesses),cq(g.msFirst?msToTs(g.msFirst):""),cq(g.msLast?msToTs(g.msLast):""),
+      cq(g.sus),cq(g.maxScore)].join(",")); }
+  var dir=LASTOUTDIR||$("outDir").value;
+  var path=dir+"\\users_export_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(groups.length)+" users → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function exportGeneric(){
+  var rows=window.__viewRows||[];
+  if(!GHEAD||!rows.length){ setStatus("Nothing to export","err"); return; }
+  var lines=[]; var hd=[]; for(var c=0;c<GHEAD.length;c++) hd.push(cq(GHEAD[c])); lines.push(hd.join(","));
+  for(var i=0;i<rows.length;i++){ var rw=rows[i]; var cells=[]; for(var c2=0;c2<GHEAD.length;c2++) cells.push(cq(c2<rw.length?rw[c2]:"")); lines.push(cells.join(",")); }
+  var dir=LASTOUTDIR||$("outDir").value;
+  var path=dir+"\\filtered_export_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(rows.length)+" rows → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function copyNotes(){
+  if(MODE==="generic"){
+    var grows=(window.__viewRows||[]).slice(0,500); if(!GHEAD||!grows.length){ setStatus("Nothing to copy","err"); return; }
+    var gout=[GHEAD.join("\t")];
+    for(var g=0;g<grows.length;g++) gout.push(grows[g].join("\t"));
+    try{ window.clipboardData.setData("Text", gout.join("\r\n")); setStatus("Copied "+grows.length+" rows (TSV)","ok"); }
+    catch(eg){ setStatus("Copy failed: "+eg.message,"err"); }
+    return;
+  }
+  var rows=(window.__viewRows||[]).slice(0,500);
+  if(!rows.length){ setStatus("Nothing to copy","err"); return; }
+  var out=[];
+  if(VIEW==="users"){
+    for(var j=0;j<rows.length;j++){ var g2=rows[j];
+      out.push(g2.user+" | "+g2.nIps+" IP(s) | "+g2.nRoles+" role(s) | "+nf(g2.accesses)+" accesses | "
+        +(g2.msFirst?msToTs(g2.msFirst):"?")+" → "+(g2.msLast?msToTs(g2.msLast):"?")
+        +(g2.sus?(" | "+g2.sus+" sus (max score "+g2.maxScore+")"):"")); }
+    try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+out.length+" users to clipboard","ok"); }
+    catch(eu){ setStatus("Copy failed: "+eu.message,"err"); }
+    return;
+  }
+  for(var i=0;i<rows.length;i++){ var r=rows[i];
+    out.push(r.user+" @ "+r.ip+" | "+r.role+" | "+r.firstSeen+" → "+r.lastSeen+" | accesses="+r.totalAccesses+" days="+r.dayCount
+      +(r.tags.length?(" | "+r.tags.join(",")+" (score "+r.score+")"):"")
+      +(r.reasons.length?(" | "+r.reasons.join("; ")):"")); }
+  try{ window.clipboardData.setData("Text", out.join("\r\n"));
+    setStatus("Copied "+out.length+" clients to clipboard","ok"); }
+  catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+
+/* ---------- IOC list ---------- */
+function applyIocs(){
+  var t=$("iocBox").value, parts=String(t).split(/[\r\n,;]+/), out=[];
+  for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s) out.push(s); }
+  IOCS=out;
+  $("iocInfo").innerHTML=IOCS.length?(nf(IOCS.length)+" term(s) active"):"no terms";
+  if(MODE==="sum"&&ROWS.length){ rescoreAll(); render(); if(DETREC) renderDetail(DETREC); }
+  setStatus(IOCS.length?("IOC list applied — "+IOCS.length+" term(s), records rescored"):"IOC list cleared","ok");
+}
+
+/* ---------- wiring ---------- */
+function init(){
+  try{ window.resizeTo(1320,900); }catch(e){}
+  $("appver").innerHTML="&middot; v"+APP_VERSION;
+  try{ document.title="SumECmd Wrapper v"+APP_VERSION; }catch(e){}
+  $("tblScroll").onscroll=applyFreeze;
+  loadSettings();
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  $("pfPath").value="";
+  $("inMode").value="d";
+  $("hostName").onkeyup=function(){ HOST_TOUCHED=true; syncOutDir(); };
+  $("outDir").onkeyup=function(){ OUT_TOUCHED=true; };
+  loadToolkitIoc();   // shared toolkit IOC.txt — merged before any CLI /auto run
+
+  var zoom=0.9;
+  var zContent=$("content");
+  function applyZoom(){ zContent.style.zoom=zoom; var p=Math.round(zoom*100)+"%";
+    $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
+  applyZoom();
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
+
+  $("verBtn").onclick=checkVersion;
+  $("updBtn").onclick=downloadLatest;
+  $("openDirBtn").onclick=openDir;
+  $("procBtn").onclick=processSum;
+  $("loadSelBtn").onclick=function(){ var v=$("producedSel").value; if(!v) return;
+    setStatus("Loading "+v,"muted"); window.setTimeout(function(){ loadCsvFile(v); },50); };
+  $("browseBtn").onclick=function(){
+    if($("inMode").value==="d"){
+      // real folder picker — the HTML file input can only select files
+      try{
+        var sha=new ActiveXObject("Shell.Application");
+        var fld=sha.BrowseForFolder(0,"Select the Sum\\ folder to process (must hold SystemIdentity.mdb + Current.mdb).",0x51);
+        if(fld){ var p=""; try{ p=fld.Self.Path+""; }catch(e2){}
+          if(/^[a-z]:\\|^\\\\/i.test(p)){ $("pfPath").value=p; hostGuessFrom(p); }
+          else if(p) setStatus("That selection has no filesystem path — pick a real folder.","err"); }
+      }catch(e){ $("pfPick").click(); }   // fallback to the file picker if the shell dialog is unavailable
+    } else { $("pfPick").click(); }
+  };
+  $("pfPick").onchange=function(){ if(this.value){ var v=this.value;
+    $("pfPath").value=v; hostGuessFrom(v); } };
+  $("loadBtn").onclick=function(){ $("csvPick").click(); };
+  $("csvPick").onchange=function(){ if(this.value){ setStatus("Loading "+this.value,"muted"); loadCsvFile(this.value); } };
+  $("logToggle").onclick=function(){ var l=$("log");
+    if(l.style.display==="none"||!l.style.display){
+      if(!trimStr(l.innerHTML.replace(/<[^>]*>/g,""))){ l.innerHTML='<span class="muted">(empty — SumECmd output appears here after a run finishes. While a run is in progress a console window shows live progress.)</span>'; l.setAttribute("data-ph","1"); }
+      l.style.display="block"; this.innerHTML="Hide log";
+    } else { l.style.display="none"; this.innerHTML="Show log"; } };
+
+  var catBtns=$("pfCats").getElementsByTagName("button");
+  for(var i=0;i<catBtns.length;i++){ if(catBtns[i].getAttribute("data-cat")){ catBtns[i].onclick=function(){
+    CURCAT=this.getAttribute("data-cat"); highlightCat(); render();
+  }; } }
+
+  $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
+    qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); render(); },150); };
+  $("dfrom").onchange=function(){ DFROM=dayNum(this.value); render(); };
+  $("dto").onchange=function(){ DTO=dayNum(this.value); render(); };
+  $("srcSel").onchange=function(){ SRCFILTER=this.value; render(); };
+  $("clearBtn").onclick=function(){ $("q").value="";$("dfrom").value="";$("dto").value="";$("srcSel").value="";
+    QUERY="";DFROM=0;DTO=0;SRCFILTER="";CURCAT="all"; highlightCat(); render(); };
+  $("exportBtn").onclick=exportView;
+  $("copyBtn").onclick=copyNotes;
+
+  $("vExec").onclick=function(){ setView("clients"); };
+  $("vTime").onclick=function(){ setView("time"); };
+  $("vUsers").onclick=function(){ setView("users"); };
+  $("iocBtn").onclick=function(){ var w=$("iocWrap"); showEl("iocWrap", /\bhide\b/.test(w.className)); };
+  $("iocApply").onclick=applyIocs;
+  $("iocLoad").onclick=function(){ $("iocPick").click(); };
+  $("iocPick").onchange=function(){ if(this.value){
+    try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }
+    catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
+  $("detClose").onclick=closeDetail;
+  $("detCopy").onclick=copyDetail;
+
+  /* click delegation: data-q -> search filter; data-userq (Users view) -> Clients filtered to that user;
+     a Clients/Timeline table row -> detail pane */
+  document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
+    if(t && /\bcgrip\b/.test((t.className||"")+"")) return;   // column-resize grips never act as row/link clicks
+    var uq=t&&t.getAttribute?t.getAttribute("data-userq"):null;
+    if(uq){ setView("clients"); $("q").value=uq; QUERY=uq.toLowerCase(); CURCAT="all"; highlightCat(); render(); return; }
+    var q=t&&t.getAttribute?t.getAttribute("data-q"):null;
+    if(q){ $("q").value=q; QUERY=q.toLowerCase(); render(); return; }
+    if(MODE!=="sum"||VIEW==="users") return;
+    var n=t;
+    while(n && n.tagName!=="TR"){ n=n.parentNode; if(n&&n.tagName==="TABLE") { n=null; break; } }
+    if(n && n.getAttribute && n.getAttribute("data-i")!=null && n.getAttribute("data-i")!==""){
+      var ix=parseInt(n.getAttribute("data-i"),10);
+      var rows=window.__viewRows||[];
+      if(ix>=0&&ix<rows.length){
+        var rr=rows[ix];
+        renderDetail(rr);
+        var trs=$("tbl").getElementsByTagName("tr");
+        for(var z=0;z<trs.length;z++){ if(trs[z].getAttribute("data-i")!=null){
+          var zi=parseInt(trs[z].getAttribute("data-i"),10);
+          var zr=rows[zi]||null;
+          trs[z].className = (zi===ix) ? (((zr&&zr.sus)?"sus ":"")+"sel") : ((zr&&zr.sus)?"sus":""); } }
+      }
+    }
+  };
+
+  var __cli=parseCli(); var __had=false; try{ __had=applyCli(__cli); }catch(eC){ appendLog("CLI parse error: "+eC.message); }
+  evaluateTooling(!__had);
+  if(isNetworkPath(htaFolder()))
+    appendLog("Heads-up: this app is running from a network location ("+htaFolder()+"). Windows zone policy may block the UTF-8 file reader there; the app falls back to ANSI IO automatically, but for full fidelity copy the folder to a local path (e.g. C:\\Tools\\SumECmd).");
+}
+function isNetworkPath(p){
+  try{ if(/^\\\\/.test(p)) return true;
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    return fso.GetDrive(fso.GetDriveName(p)).DriveType===3;   // 3 = Remote
+  }catch(e){ return false; }
+}
+function dayNum(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m) return 0;
+  function p(x){ x=String(x); return x.length<2?("0"+x):x; }
+  return Number(m[1]+p(m[2])+p(m[3])); }
+
+/* ---------- help / about overlay ---------- */
+var GITHUB="https://github.com/bpmorris22/SumECmd-Wrapper";
+function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
+function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
+function closeHelp(){ showEl("helpModal",false); }
+
+/* ---------- command-line invocation: "<inputOrCsv>" ["<outDir>"] [/auto] ----------
+   .csv -> auto-load into the viewer; a Sum\ folder or a .mdb file -> prefill input (+process if /auto).
+   The Artifact-Finder catalogs the sum row per Current.mdb file, so the CLI often receives the FILE
+   path — resolveSumDir() maps it back to the parent Sum\ folder at process time. */
+/* HTA:APPLICATION.commandLine is UNDEFINED in IE=edge document mode (a known mshta quirk that silently
+   kills CLI args). Recover it from WMI: the newest mshta.exe process whose command line names this .hta. */
+function getCommandLine(){
+  try{ var cl=sumcmdHta.commandLine+""; if(cl && cl!=="undefined") return cl; }catch(e){}
+  try{
+    var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\");
+    var fn=lp.substring(lp.lastIndexOf("\\")+1).toLowerCase(); if(!fn) return "";
+    var loc=new ActiveXObject("WbemScripting.SWbemLocator"), svc=loc.ConnectServer(".","root\\cimv2");
+    var q=svc.ExecQuery("SELECT CommandLine,CreationDate FROM Win32_Process WHERE Name='mshta.exe'");
+    var best="", bestDate="", en=new Enumerator(q);
+    for(; !en.atEnd(); en.moveNext()){ var pr=en.item(); var pcl=(pr.CommandLine==null?"":pr.CommandLine+"");
+      if(pcl.toLowerCase().indexOf(fn)<0) continue; var cd=(pr.CreationDate==null?"":pr.CreationDate+"");
+      if(!best || cd>bestDate){ best=pcl; bestDate=cd; } }
+    return best;
+  }catch(e2){}
+  return "";
+}
+function tokenizeCmdTail(){ var cl=getCommandLine(); if(!cl) return [];
+  var m=cl.match(/\.hta"?/i); var tail=m?cl.substring(m.index+m[0].length):cl;
+  var toks=[],i=0,n=tail.length,cur="",inq=false;
+  while(i<n){ var c=tail.charAt(i);
+    if(inq){ if(c==='"'){inq=false;} else cur+=c; i++; continue; }
+    if(c==='"'){ inq=true; i++; continue; }
+    if(c===' '||c==='\t'){ if(cur!==""){toks.push(cur);cur="";} i++; continue; }
+    cur+=c; i++; }
+  if(cur!=="") toks.push(cur); return toks; }
+function parseCli(){ var toks=tokenizeCmdTail(), cli={input:"",outDir:"",auto:false};
+  for(var i=0;i<toks.length;i++){ var t=toks[i];
+    if(/^[\/\-]{1,2}auto$/i.test(t)){ cli.auto=true; continue; }
+    if(/^[\/\-]/.test(t)) continue;
+    if(!cli.input) cli.input=t; else if(!cli.outDir) cli.outDir=t; }
+  return cli; }
+function applyCli(cli){ if(!cli.input) return false;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(/\.csv$/i.test(cli.input) && fso.FileExists(cli.input)){ appendLog("CLI: loading CSV "+cli.input); window.setTimeout(function(){ loadCsvFile(cli.input); },60); return true; }
+  if(fso.FolderExists(cli.input)){ $("inMode").value="d"; $("pfPath").value=cli.input; }
+  else if(fso.FileExists(cli.input)){ $("inMode").value="f"; $("pfPath").value=cli.input; }
+  else { setStatus("CLI input not found: "+cli.input,"err"); appendLog("CLI input not found: "+cli.input); return false; }
+  if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
+  else hostGuessFrom(cli.input);
+  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ processSum(); },200); }
+  else setStatus("CLI: input prefilled — click 'Process → analyze' to run.","muted");
+  return true; }
+
+/* ---------- self-update: quiet check of this app's GitHub Releases; one-click download of a newer .hta ---------- */
+var SELF_REPO="bpmorris22/SumECmd-Wrapper", SELF_HTA="SumECmd-Wrapper.hta", SELF_LATEST="", SELF_ASSET_URL="";
+function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
+  for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
+function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\");
+  if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){} return (htaFolder()||"")+"\\"+SELF_HTA; }
+function checkSelfUpdate(){
+  try{
+    var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
+    x.open("GET","https://api.github.com/repos/"+SELF_REPO+"/releases/latest",true);
+    try{ x.setRequestHeader("User-Agent",SELF_HTA); }catch(eh){}
+    x.onreadystatechange=function(){ if(x.readyState!==4) return;
+      try{ if(x.status!==200) return; var t=x.responseText+"";
+        var m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
+        var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)) return;
+        var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm;
+        while((mm=re.exec(t))){ if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0){ url=mm[1]; break; } if(!url) url=mm[1]; }
+        if(!url) url="https://github.com/"+SELF_REPO+"/releases/download/v"+latest+"/"+SELF_HTA;
+        SELF_LATEST=latest; SELF_ASSET_URL=url;
+        var b=$("selfUpd"); if(b){ b.innerHTML="Update to v"+latest; b.className="btn primary";
+          b.title="A newer "+SELF_HTA+" (v"+latest+") is on GitHub — click to download & replace this file"; }
+      }catch(e){} };
+    x.send();
+  }catch(e){}
+}
+function doSelfUpdate(){
+  if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
+  var target=selfPath();
+  if(!target || !/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
+  if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nAfter it downloads, close and reopen the app to run the new version.")) return;
+  setStatus("Downloading v"+SELF_LATEST+"…","muted");
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), tmp=fso.GetSpecialFolder(2)+"";
+  var ps1=tmp+"\\selfupd_"+new Date().getTime()+Math.floor(Math.random()*100000)+".ps1";
+  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''");
+  var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$u='"+uq+"'","$t='"+tq+"'","$tmp=Join-Path $env:TEMP ('selfupd_'+[guid]::NewGuid().ToString('N')+'.hta')",
+    "Invoke-WebRequest -Uri $u -OutFile $tmp -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }",
+    "Copy-Item $tmp $t -Force","Remove-Item $tmp -Force -ErrorAction SilentlyContinue","Write-Output 'SELFUPD_OK'"];
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
+  try{ var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
+    try{ fso.DeleteFile(ps1); }catch(e0){}
+    if((r.log+"").indexOf("SELFUPD_OK")>=0){ var b=$("selfUpd"); if(b) b.className="btn primary hide";
+      setStatus("Updated to v"+SELF_LATEST+" — CLOSE and reopen the app to run the new version.","ok");
+      try{ alert("Update installed (v"+SELF_LATEST+").\n\nClose and reopen "+SELF_HTA+" to run the new version."); }catch(e){}
+    } else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed — see log; download manually from GitHub if needed.","err"); }
+  }catch(e){ setStatus("Self-update failed: "+e.message,"err"); }
+}
+var RUN_RE = /^(\d{14})_SumECmd_(.+)_Output\.csv$/i;
+window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
+</script>
+<div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
+  <div class="mcard">
+    <span class="x" onclick="closeHelp()" title="Close">&times;</span>
+    <h2>SumECmd Wrapper <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
+    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/SumECmd-Wrapper</span></div>
+    <p>A single-file GUI for triaging the <b>SUM / User Access Logging</b> databases (Windows <b>Server</b> SKUs only) with Eric Zimmerman's SumECmd — answers "which account, from which source IP, accessed this server, over months". Runs SumECmd for you and turns the output into an interactive, suspicion-scored view.</p>
+    <h3>Quick start</h3>
+    <ul>
+      <li>SUM is a <b>server</b> artifact — workstations have no <code>Sum\</code> folder. Point the input at a collected <code>...\System32\LogFiles\Sum\</code> folder (KAPE/Velociraptor trees work), or at a <code>Current.mdb</code> inside one (the wrapper uses its parent folder). The folder must contain <code>SystemIdentity.mdb</code> so role GUIDs resolve to names.</li>
+      <li>Put this <code>.hta</code> next to <code>SumECmd.exe</code>, or use <b>Update / download SumECmd</b> to fetch it — then <b>Process → analyze</b>.</li>
+      <li>Or <b>Load existing CSV…</b> to view a SumECmd CSV you already have (the <code>ClientsDetailed</code> one loads as the analytic view; the rest open as raw tables).</li>
+    </ul>
+    <h3>Dirty ESE databases (auto-repair)</h3>
+    <ul>
+      <li>SUM databases pulled from a <b>live server are routinely dirty</b> (ESE dirty shutdown) and SumECmd aborts. The wrapper detects this and offers a <b>repair on a COPY</b>: it copies every <code>*.mdb</code> (WITHOUT the <code>.log/.chk/.jrs</code> transaction files), runs <code>esentutl /p &lt;db&gt;.mdb /o</code> on each, and re-runs SumECmd against the repaired copy. The original evidence is never touched.</li>
+      <li>If a database was written by a <b>newer Windows build</b> than this box, the local ESE engine can't open it even after repair — parse it on a Windows build at least as new as the source server (a VM works).</li>
+    </ul>
+    <h3>Command line</h3>
+    <p><code>mshta "SumECmd-Wrapper.hta" "&lt;inputOrCsv&gt;" ["&lt;outDir&gt;"] [/auto]</code></p>
+    <ul>
+      <li><code>&lt;input&gt;</code> — a <code>.csv</code> (auto-loads into the viewer), a <code>Sum\</code> folder, or a <code>.mdb</code> inside one (processed with <code>/auto</code>; a bare <code>.mdb</code> resolves to its parent folder).</li>
+      <li><code>&lt;outDir&gt;</code> — CSV output directory (optional). &nbsp; <code>/auto</code> — process immediately.</li>
+      <li><b>Target hostname</b> is required before processing — it names the output folder <code>_Processed\&lt;host&gt;\SumECmd</code> next to this app (family convention shared with the Artifact-Finder). It is guessed from <code>Collection-&lt;host&gt;-…</code> paths or a passed <code>_Processed\&lt;host&gt;\</code> outDir — overwrite the guess if it's wrong.</li>
+      <li><b>Shared IOC list</b>: an <code>IOC.txt</code> next to this app (one term per line, <code>#</code> comments) is auto-merged into the IOC box at launch — one list covers the whole toolkit. Terms you paste locally are kept.</li>
+      <li>After every successful run a <code>runinfo.json</code> provenance entry (app, host, input path, files) is appended in the output folder, including a <b>triage summary</b> (entries, flagged count, max score, top hits) — the Artifact-Finder shows these per host in its inventory.</li>
+    </ul>
+    <h3>Notes</h3>
+    <ul>
+      <li>Three views: <b>Clients</b> (one row per user × source IP × role, score-ranked), <b>Timeline</b> (same rows by last seen), and <b>Users</b> (grouped per account). Scoring: IOC hit (+3), external/routable source IP (+2), admin-pattern account (+1), single-day burst (+1), routable IPv6 (+1); rows scoring ≥ 3 are shaded.</li>
+      <li>Columns are resizable &mdash; drag a header's right edge; double-click the edge to reset. Widths are remembered per view.</li>
+      <li>All timestamps are UTC. SUM <b>retention typically spans years</b> — mind the date columns when scoping a window.</li>
+    </ul>
+    <p class="muted" style="font-size:11px">MIT © 2026 Ben Morris — click the link above for the full README &amp; releases.</p>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Case data & tool binaries must never be committed
+*.csv
+_Processed/
+Exported CSVs/
+Exported_CSVs/
+
+# SumECmd binaries (users download their own)
+SumECmd.exe
+SumECmd.dll
+SumECmd*.json
+
+# repaired ESE copies / evidence
+*.mdb
+SUM_repaired_*/
+
+# local dev / state
+IOC.txt
+IOC.csv
+*.boot.log
+*.settings.json
+*.log
+runinfo.json
+SPEC.md
+*-SPEC.md
+BUILD-NOTES.md
+
+# OS cruft
+Thumbs.db
+desktop.ini
