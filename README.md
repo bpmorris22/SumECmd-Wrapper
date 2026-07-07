@@ -4,6 +4,11 @@ A single-file GUI for **SUM / User Access Logging triage** with Eric Zimmerman's
 
 SUM (**S**oftware **U**sage **M**etrics / User Access Logging) is a **Windows Server** feature — workstations have no `Sum\` folder. Its ESE databases under `%SystemRoot%\System32\LogFiles\Sum\` record, per client, which authenticated user reached which server role from which IP, day by day, with a retention that typically spans **years**.
 
+![Control panel](images/control-panel.png)
+
+> Control panel — a collected `Sum\` folder resolved from a collection tree, engine detected, toolkit IOC list
+> merged. Screenshot uses synthetic paths (fake host `ACME-SRV02`) — no real case data.
+
 ## Quick start
 
 1. Put `SumECmd-Wrapper.hta` anywhere and double-click it — use **Update / download SumECmd** to fetch the engine, or point it at an existing copy (KAPE `Modules\bin` is found automatically).
