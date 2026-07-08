@@ -18,7 +18,7 @@
   CONTEXTMENU="yes"
   SELECTION="yes" />
 <!--
-  SumECmd CSV contract, VERIFIED 2026-07-07 against SumECmd 0.5.2.0 output (real as-dbms Sum\ folder):
+  SumECmd CSV contract, VERIFIED 2026-07-07 against SumECmd 0.5.2.0 output (real Sum\ folder):
 
   SumECmd parses the server-SKU SUM / User Access Logging ESE databases under
   %SystemRoot%\System32\LogFiles\Sum\ (SystemIdentity.mdb + Current.mdb + archived year {GUID}.mdb).
@@ -143,7 +143,7 @@
     <input type="file" id="pfPick" style="display:none">
     <button class="btn" id="browseBtn">Browse&hellip;</button>
     <label class="fld" title="Required before processing. Guessed from the input path (Collection-<host>-… segments) — overwrite it if the guess is wrong. SUM is a SERVER artifact — there is no live 'scan this machine' button.">Target hostname (required) &mdash; names the output folder _Processed\&lt;host&gt;\SumECmd next to this app</label>
-    <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. as-dbms">
+    <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. WORKSTATION-01">
     <label class="fld">CSV output directory</label>
     <input class="txt wide" id="outDir" value="">
     <button class="btn" id="openDirBtn">Open folder</button>
@@ -235,7 +235,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.2.0";
+var APP_VERSION = "0.2.1";
 var KNOWN_LATEST_SUMECMD = "0.5.2.0";                                            // baseline as of 2026-07-07 (KAPE Modules\bin build)
 var SUMCMD_ZIP_URL = "https://download.ericzimmermanstools.com/SumECmd.zip";     // official EZ mirror
 var SUMCMD_PAGE = "https://ericzimmerman.github.io/";                            // for live latest-version lookup
@@ -721,7 +721,7 @@ function processSumDone(log,outdir,before,sumDir,wasRepair){
    SUM databases from live servers are routinely DIRTY. SumECmd aborts on a dirty-shutdown ESE db.
    Fixable by repairing a COPY of the whole .mdb set (transaction logs deliberately excluded so
    ESE cannot try — and fail — to replay newer-engine logs), then re-running against the copy.
-   GROUND-TRUTHED against the real as-dbms Sum\ folder: esentutl /p <db>.mdb /o recovers the dirty
+   GROUND-TRUTHED against the real Sum\ folder: esentutl /p <db>.mdb /o recovers the dirty
    Current.mdb (JET_wrnDatabaseRepaired) and SumECmd then parses all chained year DBs. SUM's ESE
    log base is 'svc' (not SRUM's 'sru') — SumECmd's own dirty-db hint recommends
    'esentutl /r svc /i' then 'esentutl /p <dbname>.mdb'. */
