@@ -45,7 +45,7 @@
 <style>
   html{margin:0;height:100%;background:#0d1117}
   body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
-  #content{zoom:0.9;box-sizing:border-box}
+  #content{zoom:0.9;width:111.111%;box-sizing:border-box}   /* zoom<1 shrinks a 100%-wide block below viewport width — widen by 1/zoom in CSS so it fills the window from the first paint (applyZoom keeps it in sync for A-/A+) */
   a{color:#58a6ff}
   .mono{font-family:Consolas,"Courier New",monospace}
   .muted{color:#8b949e}
@@ -201,6 +201,8 @@
       </div>
       <div class="row" style="margin-bottom:8px">
         <input class="txt" id="q" placeholder="search user / IP / role&hellip;" style="width:280px">
+        <span id="userWrap" class="hide"><span class="sep"></span><label class="muted" style="font-size:12px">user:</label>
+          <select id="userSel" title="Filter every view to one authenticated user account (AuthenticatedUserName as recorded in the SUM database). Rows with no user are grouped as (no user). Applies to Clients, Timeline and Users views alike."><option value="">All users</option></select></span>
         <span id="srcWrap" class="hide"><span class="sep"></span><label class="muted" style="font-size:12px">source:</label>
           <select id="srcSel" title="Filter by source file."><option value="">all source files</option></select></span>
         <span id="pfDateCtl" class="hide">
@@ -225,7 +227,7 @@
         <span class="muted" id="iocInfo" style="font-size:11px"></span>
       </div>
       <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
-      <div class="muted" id="pfFoot" style="font-size:11px;margin-top:6px">All timestamps UTC. Suspicious rows are shaded (score &ge; 3: IOC hit, external source IP, admin-pattern account, single-day burst, routable IPv6&hellip;). Click a row for full detail (per-day access counts, role GUID, tenant). SUM retention typically spans YEARS — mind the date columns when scoping. Max 6000 rows shown; export writes the full filtered set.</div>
+      <div class="muted" id="pfFoot" style="font-size:11px;margin-top:6px">All timestamps UTC. Suspicious rows are shaded (score &ge; 3: IOC hit, external source IP, admin-pattern account, single-day burst, routable IPv6&hellip;). Click a row for full detail (per-day access counts, role GUID, tenant); click a User cell (or a row in the Users view) to filter every view to that account. SUM retention typically spans YEARS — mind the date columns when scoping. Max 6000 rows shown; export writes the full filtered set.</div>
     </div>
 
     <div class="card hide" id="detailCard">
@@ -239,7 +241,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.1";
+var APP_VERSION = "0.4.1";
 var KNOWN_LATEST_SUMECMD = "0.5.2.0";                                            // baseline as of 2026-07-07 (KAPE Modules\bin build)
 var SUMCMD_ZIP_URL = "https://download.ericzimmermanstools.com/SumECmd.zip";     // official EZ mirror
 var SUMCMD_PAGE = "https://ericzimmerman.github.io/";                            // for live latest-version lookup
@@ -265,6 +267,7 @@ var GHEAD = null, GROWS = [], GSRC = "";
 var GSORTKEY = -1, GSORTDIR = 1;
 var GSRCIDX = -1;                    // generic mode: index of the SourceFile(name) column
 var SRCFILTER = "";                  // selected source-file filter (generic mode)
+var USERFILTER = "";                 // selected user-account filter (sum mode; userDisp value, "" = all users)
 var BUSY = false;                    // a SumECmd run is in progress
 var PRODUCED = [];                   // CSVs produced by the last run
 
@@ -441,6 +444,20 @@ function populateSourceFilter(vals){
   SRCFILTER=""; sel.value="";
   showEl("srcWrap", vals.length>1);
 }
+/* user-account filter (sum mode) — clone of the source dropdown; values are userDisp
+   (the raw AuthenticatedUserName, or "(no user)" for records SUM recorded without one),
+   so a blank-user record is still selectable rather than silently dropped */
+function populateUserFilter(vals){
+  var sel=$("userSel"); if(!sel) return;
+  var prev=USERFILTER, found=false;
+  sel.innerHTML="";
+  var o0=document.createElement("option"); o0.value=""; o0.text="All users ("+vals.length+")"; sel.add(o0);
+  vals=vals.slice(0).sort();
+  for(var i=0;i<vals.length;i++){ var o=document.createElement("option"); o.value=vals[i]; o.text=vals[i]; sel.add(o);
+    if(vals[i]===prev) found=true; }
+  if(prev&&found){ sel.value=prev; } else { USERFILTER=""; sel.value=""; }
+  showEl("userWrap", vals.length>1);
+}
 
 /* ---------- tooling: locate / version / download ---------- */
 function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
@@ -523,11 +540,11 @@ function evaluateTooling(promptIfNeeded){
     }
   }
 }
-function downloadLatest(){
+function downloadLatest(silent, done){   // silent: skip the confirms (unattended /auto); done(ok): fired after install
   var target=htaFolder()||EXE_DIR;   // always install next to the .hta (self-contained)
-  if(!target){ setStatus("Cannot determine the app folder to install into","err"); return; }
-  if(!WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SumECmd from\n"+SUMCMD_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
-  if(WEB_OK && !confirm("Download latest SumECmd (v"+(LATEST_VER||KNOWN_LATEST_SUMECMD)+") from:\n"+SUMCMD_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
+  if(!target){ setStatus("Cannot determine the app folder to install into","err"); if(done) done(false); return; }
+  if(!silent && !WEB_OK && !confirm("The Zimmerman Tools site did not respond earlier (no internet?).\n\nTry downloading SumECmd from\n"+SUMCMD_ZIP_URL+"\ninto\n"+target+" anyway?")) return;
+  if(!silent && WEB_OK && !confirm("Download latest SumECmd (v"+(LATEST_VER||KNOWN_LATEST_SUMECMD)+") from:\n"+SUMCMD_ZIP_URL+"\n\nInstall next to the app into:\n"+target+"\n\nProceed?")) return;
   setStatus("Downloading & installing SumECmd… (give it a moment)","muted");
   var tq=String(target).replace(/'/g,"''");
   var ps="$ErrorActionPreference='Stop';"
@@ -547,9 +564,23 @@ function downloadLatest(){
   try{
     var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -Command "'+ps+'" > "__LOG__" 2>&1']);
     appendLog("--- SumECmd download / install ---\n"+r.log);
-    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SumECmd installed to "+target,"ok"); evaluateTooling(false); }
-    else setStatus("Download/install failed — see log","err");
+    if((r.log+"").indexOf("INSTALL_OK")>=0){ setStatus("SumECmd installed to "+target,"ok"); evaluateTooling(false); if(done) done(true); }
+    else { setStatus("Download/install failed — see log","err"); if(done) done(false); }
   }catch(e){ setStatus("Download failed: "+e.message,"err"); }
+}
+/* /auto launch: if the tool exe is missing, fetch it first and run in the install callback.
+   The Finder's Process / Process-all fires wrappers unattended, so a missing exe must self-resolve
+   rather than just erroring. Exe already present, or genuinely offline, falls straight through to the
+   normal run (the process function emits the existing clear "not found" message when offline). */
+function autoProcess(){
+  if(EXE && fileExists(EXE)){ processSum(); return; }
+  if(WEB_OK){
+    setStatus("SumECmd.exe not present - downloading it before this auto run…","muted");
+    appendLog("/auto: SumECmd.exe missing - fetching it before processing");
+    downloadLatest(true, function(ok){ if(ok) processSum(); });
+    return;
+  }
+  processSum();   // offline: let the process function surface the existing "download it first" error
 }
 
 /* ---------- actions ---------- */
@@ -926,6 +957,7 @@ function ingestSum(raw, idx, srcLabel){
     rc.msFirst=msOf(rc.firstSeen); rc.msLast=msOf(rc.lastSeen);
     rc.dayFirst=dayOf(rc.firstSeen); rc.dayLast=dayOf(rc.lastSeen);
     rc.days.sort(function(a,b){ return dayOf(a.d)-dayOf(b.d); });
+    rc.userDisp=rc.user||"(no user)";   // filter/display key: real AuthenticatedUserName, or a labeled bucket for blank-user records
     rc.blob=(rc.user+" "+rc.ip+" "+rc.role+" "+rc.roleGuid+" "+rc.clientName+" "+rc.srcFile).toLowerCase();
     ROWS.push(rc);
   }
@@ -933,6 +965,9 @@ function ingestSum(raw, idx, srcLabel){
   rescoreAll();
   setMode("sum");
   populateSourceFilter([]);
+  USERFILTER="";
+  var uvals=[]; for(var uu=0;uu<ROWS.length;uu++) uvals.push(ROWS[uu].userDisp);
+  populateUserFilter(distinctVals(uvals));
   $("results").className="";
   var du=distinctBy(ROWS,"userL"), di=distinctBy(ROWS,"ip");
   $("srcpill").innerHTML=nf(ROWS.length)+" clients &middot; "+nf(du)+" users &middot; "+nf(di)+" IPs &middot; "+esc(srcLabel);
@@ -1028,7 +1063,7 @@ function renderSumAgg(rows){
 /* ---------- clients / timeline table (shared columns) ---------- */
 var COLS=[
   {h:"Tags", sk:function(r){return -r.score;}, cell:function(r){return '<td class="first">'+tagHtml(r)+'</td>';}},
-  {h:"User", sk:function(r){return r.userL;}, cell:function(r){return '<td class="mono lnk" data-q="'+esc(r.user)+'" title="'+esc(r.user)+'">'+esc(r.user)+'</td>';}},
+  {h:"User", sk:function(r){return r.userL;}, cell:function(r){return '<td class="mono lnk" data-user="'+esc(r.userDisp)+'" title="Click to filter every view to '+esc(r.userDisp)+'">'+esc(r.userDisp)+'</td>';}},
   {h:"Source IP", sk:function(r){return r.ipSort;}, cell:function(r){return '<td class="mono lnk" data-q="'+esc(r.ip)+'" title="'+esc(r.ip)+'">'+esc(r.ip)+'</td>';}},
   {h:"Role", sk:function(r){return r.roleL;}, cell:function(r){return '<td class="mono" title="'+esc(r.role)+(r.roleGuid?("  ("+esc(r.roleGuid)+")"):"")+'">'+esc(r.role)+'</td>';}},
   {h:"First seen (UTC)", sk:function(r){return r.msFirst;}, cell:function(r){return '<td class="mono">'+esc(r.firstSeen)+'</td>';}},
@@ -1059,6 +1094,7 @@ function filteredClients(){
   var out=[];
   for(var i=0;i<ROWS.length;i++){
     var r=ROWS[i];
+    if(USERFILTER && r.userDisp!==USERFILTER) continue;
     if(!catPass(r)) continue;
     if(DFROM&&(!r.dayLast||r.dayLast<DFROM)) continue;
     if(DTO&&(!r.dayLast||r.dayLast>DTO)) continue;
@@ -1158,7 +1194,7 @@ function buildUserGroups(rows){
   var map={}, order=[];
   for(var i=0;i<rows.length;i++){ var r=rows[i];
     var g=map[r.userL];
-    if(!g){ g={user:r.user, userL:r.userL, ips:{}, roles:{}, nIps:0, nRoles:0, accesses:0,
+    if(!g){ g={user:r.user, userL:r.userL, userDisp:r.userDisp, ips:{}, roles:{}, nIps:0, nRoles:0, accesses:0,
              msFirst:0, msLast:0, sus:0, maxScore:0, n:0}; map[r.userL]=g; order.push(g); }
     if(r.ip && !g.ips[r.ip]){ g.ips[r.ip]=1; g.nIps++; }
     if(r.role && !g.roles[r.role]){ g.roles[r.role]=1; g.nRoles++; }
@@ -1186,16 +1222,16 @@ function renderUsers(){
   }
   html+="</tr></thead><tbody>";
   for(var i=0;i<groups.length;i++){
-    var g=groups[i], qq=esc(g.user);
-    html+='<tr'+(g.sus?' class="sus"':'')+' style="cursor:pointer" title="Click to see this user\'s clients">';
-    html+='<td class="first mono" data-userq="'+qq+'">'+esc(g.user)+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.nIps))+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.nRoles))+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(nf(g.accesses))+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'">'+esc(g.msFirst?msToTs(g.msFirst):"")+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'">'+esc(g.msLast?msToTs(g.msLast):"")+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right'+(g.sus?';color:#ff6b6b':'')+'">'+esc(nf(g.sus))+'</td>';
-    html+='<td class="mono" data-userq="'+qq+'" style="text-align:right">'+esc(g.maxScore)+'</td>';
+    var g=groups[i], qq=esc(g.userDisp);
+    html+='<tr'+(g.sus?' class="sus"':'')+' style="cursor:pointer" title="Click to filter every view to this user\'s clients">';
+    html+='<td class="first mono" data-user="'+qq+'">'+esc(g.userDisp)+'</td>';
+    html+='<td class="mono" data-user="'+qq+'" style="text-align:right">'+esc(nf(g.nIps))+'</td>';
+    html+='<td class="mono" data-user="'+qq+'" style="text-align:right">'+esc(nf(g.nRoles))+'</td>';
+    html+='<td class="mono" data-user="'+qq+'" style="text-align:right">'+esc(nf(g.accesses))+'</td>';
+    html+='<td class="mono" data-user="'+qq+'">'+esc(g.msFirst?msToTs(g.msFirst):"")+'</td>';
+    html+='<td class="mono" data-user="'+qq+'">'+esc(g.msLast?msToTs(g.msLast):"")+'</td>';
+    html+='<td class="mono" data-user="'+qq+'" style="text-align:right'+(g.sus?';color:#ff6b6b':'')+'">'+esc(nf(g.sus))+'</td>';
+    html+='<td class="mono" data-user="'+qq+'" style="text-align:right">'+esc(g.maxScore)+'</td>';
     html+="</tr>";
   }
   html+="</tbody>";
@@ -1392,7 +1428,7 @@ function setMode(m){
   MODE=m; var sm=(m==="sum");
   showEl("pfCards",sm); showEl("pfCats",sm && VIEW!=="users"); showEl("pfDateCtl",sm); showEl("pfFoot",sm);
   showEl("iocBtn",sm); showEl("viewToggle",sm);
-  if(!sm){ showEl("iocWrap",false); closeDetail(); }
+  if(!sm){ showEl("iocWrap",false); closeDetail(); showEl("userWrap",false); }   // generic mode uses the source dropdown, not the user filter
   if(sm) showEl("srcWrap",false);
   $("ovTitle").innerHTML = sm ? "Overview &mdash; reflects active filters" : "Overview";
   $("tableTitle").innerHTML = sm ? ((VIEW==="users")?"Users (grouped)":((VIEW==="time")?"Client timeline (by last seen)":"Clients")) : "Records";
@@ -1540,8 +1576,10 @@ function init(){
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); render(); };
   $("dto").onchange=function(){ DTO=dayNum(this.value); render(); };
   $("srcSel").onchange=function(){ SRCFILTER=this.value; render(); };
+  $("userSel").onchange=function(){ USERFILTER=this.value; render(); };
   $("clearBtn").onclick=function(){ $("q").value="";$("dfrom").value="";$("dto").value="";$("srcSel").value="";
-    QUERY="";DFROM=0;DTO=0;SRCFILTER="";CURCAT="all"; highlightCat(); render(); };
+    QUERY="";DFROM=0;DTO=0;SRCFILTER="";CURCAT="all"; USERFILTER=""; try{ $("userSel").value=""; }catch(ec){}
+    highlightCat(); render(); };
   $("exportBtn").onclick=exportView;
   $("copyBtn").onclick=copyNotes;
 
@@ -1557,12 +1595,14 @@ function init(){
   $("detClose").onclick=closeDetail;
   $("detCopy").onclick=copyDetail;
 
-  /* click delegation: data-q -> search filter; data-userq (Users view) -> Clients filtered to that user;
-     a Clients/Timeline table row -> detail pane */
+  /* click delegation: data-user -> sticky user filter (Users-view rows drop into Clients);
+     data-q -> search filter; a Clients/Timeline table row -> detail pane */
   document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
     if(t && /\bcgrip\b/.test((t.className||"")+"")) return;   // column-resize grips never act as row/link clicks
-    var uq=t&&t.getAttribute?t.getAttribute("data-userq"):null;
-    if(uq){ setView("clients"); $("q").value=uq; QUERY=uq.toLowerCase(); CURCAT="all"; highlightCat(); render(); return; }
+    var du=t&&t.getAttribute?t.getAttribute("data-user"):null;
+    if(du!=null&&du!==""){ USERFILTER=du; try{ $("userSel").value=du; }catch(eu){}
+      if(VIEW==="users") setView("clients", true);   // clicking a user in the grouped view drills into that user's individual clients
+      render(); return; }
     var q=t&&t.getAttribute?t.getAttribute("data-q"):null;
     if(q){ $("q").value=q; QUERY=q.toLowerCase(); render(); return; }
     if(MODE!=="sum"||VIEW==="users") return;
@@ -1666,7 +1706,7 @@ function applyCli(cli){ if(!cli.input) return false;
   else { setStatus("CLI input not found: "+cli.input,"err"); appendLog("CLI input not found: "+cli.input); return false; }
   if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; hostGuessFrom(cli.outDir); }
   else hostGuessFrom(cli.input);
-  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ processSum(); },200); }
+  if(cli.auto){ appendLog("CLI: /auto — processing "+cli.input); window.setTimeout(function(){ autoProcess(); },200); }
   else setStatus("CLI: input prefilled — click 'Process → analyze' to run.","muted");
   return true; }
 
@@ -1752,6 +1792,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <h3>Notes</h3>
     <ul>
       <li>Three views: <b>Clients</b> (one row per user × source IP × role, score-ranked), <b>Timeline</b> (same rows by last seen), and <b>Users</b> (grouped per account). Scoring: IOC hit (+3), external/routable source IP (+2), admin-pattern account (+1), single-day burst (+1), routable IPv6 (+1); rows scoring ≥ 3 are shaded.</li>
+      <li><b>User filter</b>: the <code>user:</code> dropdown (or clicking any User cell / Users-view row) isolates one authenticated account across all three views. It appears only when the data holds more than one account; blank-user records group under <code>(no user)</code>. Exports honor it like every other filter.</li>
       <li>Columns are resizable &mdash; drag a header's right edge; double-click the edge to reset. Widths are remembered per view.</li>
       <li>All timestamps are UTC. SUM <b>retention typically spans years</b> — mind the date columns when scoping a window.</li>
     </ul>
